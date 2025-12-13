@@ -49,7 +49,95 @@ except ImportError as e:
     print("Please ensure the required modules are in your Python path")
     sys.exit(1)
 
-
+def ttf2im_robust(font, char, canvas_size=256):
+    """
+    Robust font rendering with proper centering and edge protection.
+    
+    Args:
+        font: pygame.freetype.Font object
+        char: Character to render
+        canvas_size: Size of output square image
+    
+    Returns:
+        PIL Image of the rendered character, or None on failure
+    """
+    try:
+        # Try to render the character
+        surface, _ = font.render(char, size=canvas_size)
+    except Exception as e:
+        print(f"Failed to render character '{char}': {e}")
+        return None
+    
+    try:
+        # Create white background
+        bg = np.full((canvas_size, canvas_size), 255, dtype=np.uint8)
+        
+        # Get alpha channel and invert (black character on transparent background)
+        imo = pygame.surfarray.pixels_alpha(surface).transpose(1, 0)
+        imo = 255 - np.array(Image.fromarray(imo))
+        
+        # Make a copy for modification
+        result = bg.copy()
+        
+        # Get original dimensions
+        h, w = imo.shape[:2]
+        
+        # Resize only if character exceeds canvas - with safety
+        if h > canvas_size or w > canvas_size:
+            # Calculate scaling factor to fit within canvas
+            scale = min(canvas_size / h, canvas_size / w)
+            
+            # Ensure minimum dimensions of 1 pixel
+            new_h = max(1, int(h * scale))
+            new_w = max(1, int(w * scale))
+            
+            # Resize with area interpolation (good for downscaling)
+            imo = cv2.resize(imo, (new_w, new_h), interpolation=cv2.INTER_AREA)
+            h, w = new_h, new_w  # Update dimensions
+        
+        # Calculate centering position with bounds checking
+        x = (canvas_size - w) // 2
+        y = (canvas_size - h) // 2
+        
+        # Ensure positions are within valid range
+        x = max(0, min(x, canvas_size - w))
+        y = max(0, min(y, canvas_size - h))
+        
+        # Calculate end positions
+        end_x = x + w
+        end_y = y + h
+        
+        # Final bounds check
+        if (x >= 0 and y >= 0 and 
+            end_x <= canvas_size and end_y <= canvas_size and
+            w > 0 and h > 0):
+            
+            # CORRECT placement: im[y:y+h, x:x+w] = imo
+            result[y:end_y, x:end_x] = imo
+        else:
+            # Fallback: Use the entire canvas if placement fails
+            print(f"Warning: Placement error for '{char}', using center crop")
+            if w <= canvas_size and h <= canvas_size:
+                # Simple center placement
+                center_x = (canvas_size - w) // 2
+                center_y = (canvas_size - h) // 2
+                result[center_y:center_y+h, center_x:center_x+w] = imo
+        
+        # Convert to PIL Image
+        pil_image = Image.fromarray(result.astype('uint8')).convert('RGB')
+        
+        # Optional: Add a visual debug border for problematic characters
+        if hasattr(font, '_debug') and font._debug:
+            from PIL import ImageDraw
+            draw = ImageDraw.Draw(pil_image)
+            draw.rectangle([0, 0, canvas_size-1, canvas_size-1], outline="red", width=1)
+        
+        return pil_image
+        
+    except Exception as e:
+        print(f"Error processing character '{char}': {e}")
+        return None
+    
 class FontRenderer:
     """
     Robust font renderer with fixed ttf2im and additional safety checks
@@ -80,119 +168,7 @@ class FontRenderer:
         Returns:
             PIL Image of rendered character or None on failure
         """
-        try:
-            # Create a transparent surface larger than needed
-            padding = 50  # Extra padding to prevent edge cropping
-            surface_size = self.canvas_size + padding * 2
-            surface = pygame.Surface((surface_size, surface_size), pygame.SRCALPHA)
-            surface.fill((0, 0, 0, 0))
-            
-            # Render character in center
-            text_surface, text_rect = font.render(
-                char,
-                fgcolor=(0, 0, 0),  # Black color
-                size=self.font_size
-            )
-            
-            # Center on surface
-            text_rect.center = (surface_size // 2, surface_size // 2)
-            surface.blit(text_surface, text_rect)
-            
-            # Get alpha channel
-            imo = pygame.surfarray.pixels_alpha(surface).transpose(1, 0)
-            imo = 255 - np.array(Image.fromarray(imo))
-            
-            # Create white background
-            bg = np.full((self.canvas_size, self.canvas_size), 255, dtype=np.uint8)
-            
-            # Resize if needed, preserving aspect ratio
-            h, w = imo.shape[:2]
-            
-            # Debug: Save the raw rendered image
-            if debug:
-                debug_raw = Image.fromarray(imo).convert('RGB')
-                debug_raw.save(f"debug_raw_{char}.png")
-            
-            # Find bounding box of non-white pixels
-            # Threshold to handle anti-aliasing
-            threshold = 10
-            binary = imo < (255 - threshold)
-            
-            if np.any(binary):
-                # Get bounding box
-                rows = np.any(binary, axis=1)
-                cols = np.any(binary, axis=0)
-                y_min, y_max = np.where(rows)[0][[0, -1]]
-                x_min, x_max = np.where(cols)[0][[0, -1]]
-                
-                # Extract character with some padding
-                pad = 5
-                y_min = max(0, y_min - pad)
-                y_max = min(h, y_max + pad + 1)
-                x_min = max(0, x_min - pad)
-                x_max = min(w, x_max + pad + 1)
-                
-                char_crop = imo[y_min:y_max, x_min:x_max]
-                crop_h, crop_w = char_crop.shape[:2]
-            else:
-                # No visible pixels, use center crop
-                char_crop = imo
-                crop_h, crop_w = h, w
-            
-            # Scale to fit in canvas while preserving aspect ratio
-            scale = min((self.canvas_size - 20) / crop_h, 
-                       (self.canvas_size - 20) / crop_w)
-            
-            if scale < 1:
-                new_h = int(crop_h * scale)
-                new_w = int(crop_w * scale)
-                char_crop = cv2.resize(char_crop, (new_w, new_h), 
-                                     interpolation=cv2.INTER_AREA)
-                crop_h, crop_w = new_h, new_w
-            elif scale > 1.5:
-                # Character is too small, use original method
-                scale = 1
-                char_crop = imo
-                crop_h, crop_w = h, w
-            
-            # Center on canvas
-            y = (self.canvas_size - crop_h) // 2
-            x = (self.canvas_size - crop_w) // 2
-            
-            # Make sure we're within bounds
-            y = max(0, min(y, self.canvas_size - crop_h))
-            x = max(0, min(x, self.canvas_size - crop_w))
-            
-            # Place character on background - FIXED SLICE
-            bg[y:y + crop_h, x:x + crop_w] = char_crop
-            
-            # Convert to PIL
-            pil_im = Image.fromarray(bg.astype('uint8')).convert('RGB')
-            
-            # Debug: Save final image
-            if debug:
-                pil_im.save(f"debug_final_{char}.png")
-                
-                # Also save visualization of placement
-                debug_img = np.zeros((self.canvas_size, self.canvas_size, 3), dtype=np.uint8)
-                debug_img[:, :, 0] = bg  # Red channel = character
-                debug_img[y:y+crop_h, x:x+crop_w, 1] = 100  # Green box = placement
-                debug_img[y:y+crop_h, x:x+crop_w, 2] = 0
-                Image.fromarray(debug_img).save(f"debug_placement_{char}.png")
-            
-            # Safety check: Ensure character is visible
-            if np.max(bg) - np.min(bg) < 10:  # Mostly uniform
-                print(f"  Warning: Character '{char}' appears blank")
-                # Return a default X shape for invalid characters
-                return self._create_default_x_marker(char)
-            
-            return pil_im
-            
-        except Exception as e:
-            print(f"  Error rendering character '{char}': {e}")
-            import traceback
-            traceback.print_exc()
-            return None
+        return ttf2im_robust(font, char, self.canvas_size)
     
     def _create_default_x_marker(self, char: str) -> Image.Image:
         """Create a default X marker for invalid/unrenderable characters"""
