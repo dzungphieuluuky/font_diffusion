@@ -4,7 +4,6 @@ outputs/
 run_sh/
 ckpt/
 ttf/
-data/
 *.zip
 content/
 
