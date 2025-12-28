@@ -262,7 +262,7 @@ def parse_args() -> Namespace:
                        help='Random seed')
     
     # Optimization flags
-    parser.add_argument('--fp16', action='store_true', default=True,
+    parser.add_argument('--fp16', action='store_true', default=False,
                        help='Use FP16 precision')
     parser.add_argument('--compile', action='store_true', default=False,
                        help='Use torch.compile')
@@ -270,7 +270,7 @@ def parse_args() -> Namespace:
                        help='Use channels last memory format')
     parser.add_argument('--enable_xformers', action='store_true', default=False,
                        help='Enable xformers')
-    parser.add_argument('--fast_sampling', action='store_true', default=True,
+    parser.add_argument('--fast_sampling', action='store_true', default=False,
                        help='Use fast sampling mode')
     
     # Checkpoint and resume
