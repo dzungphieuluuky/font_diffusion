@@ -262,7 +262,8 @@ def parse_args():
                        help='Evaluate generated images')
     parser.add_argument('--compute_fid', action='store_true', default=False,
                        help='Compute FID (requires ground truth)')
-    
+    parser.add_argument('--enable_attention_slicing', action='store_true', default=False,
+                       help='Enable attention slicing for memory efficiency')
     # Wandb configuration
     parser.add_argument('--use_wandb', action='store_true', default=False,
                        help='Log results to Weights & Biases')
