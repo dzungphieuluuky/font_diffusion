@@ -1,6 +1,7 @@
 """
 FontDiffuser Batch Processing with Inference Optimizations
 Uses optimized sampling functions for 2-3x faster processing
+Supports both Excel and TXT file inputs
 """
 
 import os
@@ -9,7 +10,7 @@ import json
 import time
 import warnings
 from pathlib import Path
-from typing import List, Dict, Tuple, Optional
+from typing import List, Dict, Tuple, Optional, Union
 from collections import defaultdict
 from functools import lru_cache
 
@@ -69,7 +70,7 @@ except ImportError as e:
 
 
 class FontDiffuserBatchProcessorOptimized:
-    """Process Excel file with optimized inference for 2-3x faster processing"""
+    """Process Excel or TXT file with optimized inference for 2-3x faster processing"""
     
     def __init__(self, args, pipe, font_manager: FontManager):
         self.args = args
@@ -319,15 +320,26 @@ class FontDiffuserBatchProcessorOptimized:
             self.stats['generation_errors'] += 1
             return None, None
     
-    def process_excel_file_optimized(self,
-                                   excel_path: str,
-                                   base_output_dir: str,
-                                   style_image_path: str = None,
-                                   generate_input_char: bool = True,
-                                   start_line: Optional[int] = None,
-                                   end_line: Optional[int] = None) -> Dict:
+    def process_file_optimized(self,
+                             input_path: str,
+                             base_output_dir: str,
+                             style_image_path: str = None,
+                             generate_input_char: bool = True,
+                             start_line: Optional[int] = None,
+                             end_line: Optional[int] = None) -> Dict:
         """
-        Process Excel file with optimized batch processing
+        Process Excel or TXT file with optimized batch processing
+        
+        Args:
+            input_path: Path to Excel (.xlsx, .xls) or TXT (.txt) file
+            base_output_dir: Base directory for all outputs
+            style_image_path: Path to style reference image
+            generate_input_char: Whether to generate the input character
+            start_line: Starting line number (1-indexed, inclusive)
+            end_line: Ending line number (1-indexed, inclusive)
+        
+        Returns:
+            Dictionary with processing results
         """
         # Start batch timing
         self.batch_start_time = time.perf_counter()
@@ -349,7 +361,33 @@ class FontDiffuserBatchProcessorOptimized:
         print(f"{'='*70}")
         print(f"Loaded {font_stats['total_fonts']} fonts")
         
-        # Load Excel file
+        # Check file type and process accordingly
+        input_path_obj = Path(input_path)
+        if not input_path_obj.exists():
+            raise FileNotFoundError(f"Input file not found: {input_path}")
+        
+        if input_path_obj.suffix.lower() in ['.xlsx', '.xls']:
+            return self._process_excel_file_optimized(
+                input_path, base_output_dir, style_image_path, 
+                generate_input_char, start_line, end_line
+            )
+        elif input_path_obj.suffix.lower() == '.txt':
+            return self._process_txt_file_optimized(
+                input_path, base_output_dir, style_image_path, 
+                generate_input_char, start_line, end_line
+            )
+        else:
+            raise ValueError(f"Unsupported file format: {input_path_obj.suffix}. "
+                           f"Supported formats: .xlsx, .xls, .txt")
+    
+    def _process_excel_file_optimized(self,
+                                    excel_path: str,
+                                    base_output_dir: str,
+                                    style_image_path: str = None,
+                                    generate_input_char: bool = True,
+                                    start_line: Optional[int] = None,
+                                    end_line: Optional[int] = None) -> Dict:
+        """Process Excel file with optimized batch processing"""
         print(f"\nLoading Excel file: {excel_path}")
         try:
             df = pd.read_excel(excel_path)
@@ -471,8 +509,135 @@ class FontDiffuserBatchProcessorOptimized:
             }
         
         # Save final summaries
-        self._save_final_summaries_optimized(base_output_dir, excel_path, results_summary, 
-                                           start_line, end_line)
+        self._save_final_summaries_optimized(
+            base_output_dir, excel_path, results_summary, 
+            start_line, end_line, input_type='excel'
+        )
+        
+        return results_summary
+    
+    def _process_txt_file_optimized(self,
+                                  txt_path: str,
+                                  base_output_dir: str,
+                                  style_image_path: str = None,
+                                  generate_input_char: bool = True,
+                                  start_line: Optional[int] = None,
+                                  end_line: Optional[int] = None) -> Dict:
+        """Process TXT file with optimized batch processing"""
+        print(f"\nLoading TXT file: {txt_path}")
+        
+        try:
+            with open(txt_path, 'r', encoding='utf-8') as f:
+                lines = f.readlines()
+            
+            # Filter and clean lines
+            characters = []
+            for line_num, line in enumerate(lines, 1):
+                line = line.strip()
+                if line and not line.startswith('#'):  # Skip empty lines and comments
+                    # Each line should contain a single character
+                    if len(line) == 1:
+                        characters.append((line_num, line))
+                    else:
+                        print(f"Warning: Line {line_num} contains more than one character, "
+                              f"using first character: '{line[0]}'")
+                        characters.append((line_num, line[0]))
+            
+            total_lines = len(characters)
+            print(f"TXT file loaded with {total_lines} valid character lines")
+            
+            if not characters:
+                raise ValueError("No valid characters found in TXT file")
+            
+        except Exception as e:
+            raise ValueError(f"Failed to load TXT file: {e}")
+        
+        # Apply line range filters
+        if start_line is not None or end_line is not None:
+            # Filter characters by line number
+            filtered_chars = []
+            for line_num, char in characters:
+                if (start_line is None or line_num >= start_line) and \
+                   (end_line is None or line_num <= end_line):
+                    filtered_chars.append((line_num, char))
+            
+            characters = filtered_chars
+            
+            print(f"Processing lines {start_line or 1} to {end_line or 'end'} "
+                  f"({len(characters)} characters)")
+        else:
+            print(f"Processing all {total_lines} characters")
+        
+        # Process each character
+        results_summary = {}
+        total_chars_to_process = len(characters)
+        processed_chars = 0
+        
+        print(f"\nTotal characters to generate: {total_chars_to_process}")
+        print(f"Estimated time: {total_chars_to_process * 3:.1f}s (3s per character)")
+        if getattr(self.args, 'fp16', True):
+            print(f"Using FP16 optimization: ~2x faster")
+        if getattr(self.args, 'fast_sampling', False):
+            print(f"Using fast sampling: ~{self.args.num_inference_steps} steps")
+        print(f"{'='*70}")
+        
+        for line_num, char in characters:
+            print(f"\n[Line {line_num}/{total_lines}] "
+                  f"Processing: '{char}'")
+            
+            # Check font support
+            font_mapping = self.font_manager.find_fonts_for_characters([char])
+            
+            # Report font support
+            if font_mapping.get(char) is None:
+                print(f"  ⚠ Character '{char}' has no font support, skipping")
+                continue
+            
+            # Create folder for this character
+            safe_char_name = self._sanitize_filename(char)
+            char_output_dir = Path(base_output_dir) / f"line_{line_num:04d}_{safe_char_name}"
+            char_output_dir.mkdir(exist_ok=True)
+            
+            # Save character information (no similar characters for TXT)
+            self._save_character_info(char_output_dir, char, [], 
+                                    font_mapping, style_image_path, line_num)
+            
+            # Generate character
+            current_progress = processed_chars + 1
+            progress_pct = (current_progress / total_chars_to_process) * 100
+            
+            print(f"  [{current_progress}/{total_chars_to_process} | {progress_pct:.1f}%] "
+                  f"Generating '{char}'...", end='', flush=True)
+            
+            # Generate character using optimized method
+            generated_image, content_pil = self.generate_character_optimized(char, style_image_path)
+            
+            if generated_image is not None:
+                # Save the generated character
+                save_success = self._save_generated_character(
+                    char_output_dir, 'single', char, generated_image, content_pil, style_image_path
+                )
+                
+                if save_success:
+                    results_summary[char] = {
+                        'output_dir': str(char_output_dir),
+                        'line_number': line_num,
+                        'generated': True,
+                        'font_used': font_mapping[char]
+                    }
+                    print(" ✓")
+                else:
+                    print(" ✗ (save failed)")
+            else:
+                print(" ✗ (generation failed)")
+            
+            processed_chars += 1
+        
+        # Save final summaries
+        self._save_final_summaries_optimized(
+            base_output_dir, txt_path, results_summary, 
+            start_line, end_line, input_type='txt'
+        )
         
         return results_summary
     
@@ -520,7 +685,7 @@ class FontDiffuserBatchProcessorOptimized:
         info_path = output_dir / "character_info.json"
         info = {
             'input_character': input_char,
-            'excel_row_number': excel_row,
+            'line_number': excel_row,
             'similar_characters': similar_chars,
             'style_image': style_image_path,
             'font_mapping': font_mapping,
@@ -596,6 +761,8 @@ class FontDiffuserBatchProcessorOptimized:
             # Create directory structure
             if char_type == 'input':
                 char_dir = output_dir / "input_character"
+            elif char_type == 'single':
+                char_dir = output_dir / "generated_character"
             else:
                 char_dir = output_dir / "similar_characters" / self._sanitize_filename(char)
             
@@ -621,9 +788,9 @@ class FontDiffuserBatchProcessorOptimized:
             print(f"    Error saving character '{char}': {e}")
             return False
     
-    def _save_final_summaries_optimized(self, base_output_dir: str, excel_path: str, 
+    def _save_final_summaries_optimized(self, base_output_dir: str, input_path: str, 
                                       results_summary: Dict, start_line: Optional[int], 
-                                      end_line: Optional[int]):
+                                      end_line: Optional[int], input_type: str = 'excel'):
         """Save final summary files with optimization metrics"""
         base_path = Path(base_output_dir)
         
@@ -634,12 +801,13 @@ class FontDiffuserBatchProcessorOptimized:
         # Global summary with optimization metrics
         global_summary = {
             'processing_completed': time.strftime('%Y-%m-%d %H:%M:%S'),
-            'excel_file': excel_path,
+            'input_file': input_path,
+            'input_type': input_type,
             'output_directory': base_output_dir,
             'line_range': {
                 'start_line': start_line,
                 'end_line': end_line,
-                'processed_rows': len(results_summary)
+                'processed_items': len(results_summary)
             },
             'optimization_settings': {
                 'fp16': getattr(self.args, 'fp16', True),
@@ -671,12 +839,12 @@ class FontDiffuserBatchProcessorOptimized:
             f.write(f"=" * 60 + "\n\n")
             
             f.write(f"Processing Completed: {global_summary['processing_completed']}\n")
-            f.write(f"Excel File: {excel_path}\n")
+            f.write(f"Input File: {input_path} ({input_type})\n")
             f.write(f"Output Directory: {base_output_dir}\n")
             
             if start_line or end_line:
                 f.write(f"Line Range: {start_line or 'start'} to {end_line or 'end'}\n")
-            f.write(f"Total Rows Processed: {len(results_summary)}\n\n")
+            f.write(f"Total Items Processed: {len(results_summary)}\n\n")
             
             f.write(f"Optimization Settings:\n")
             for key, value in global_summary['optimization_settings'].items():
@@ -702,11 +870,18 @@ class FontDiffuserBatchProcessorOptimized:
                 f.write(f"  • {font_name}: {count} characters\n")
             f.write("\n")
             
-            f.write(f"Results by Input Character:\n")
-            for input_char, info in results_summary.items():
-                f.write(f"\n  {input_char} (Row {info['excel_row']}):\n")
-                f.write(f"    Output: {info['output_dir']}\n")
-                f.write(f"    Generated: {info['generated_count']} characters\n")
+            if input_type == 'excel':
+                f.write(f"Results by Input Character:\n")
+                for input_char, info in results_summary.items():
+                    f.write(f"\n  {input_char} (Row {info['excel_row']}):\n")
+                    f.write(f"    Output: {info['output_dir']}\n")
+                    f.write(f"    Generated: {info['generated_count']} characters\n")
+            else:
+                f.write(f"Results by Character:\n")
+                for char, info in results_summary.items():
+                    f.write(f"\n  {char} (Line {info['line_number']}):\n")
+                    f.write(f"    Output: {info['output_dir']}\n")
+                    f.write(f"    Font: {info.get('font_used', 'N/A')}\n")
         
         # Print performance summary
         print(f"\n{'='*70}")
@@ -744,21 +919,21 @@ def parse_excel_batch_args_optimized():
     parser.add_argument("--font_dir", type=str, default=None,
                        help="Directory containing multiple TTF fonts (all .ttf files will be loaded)")
     
-    # Batch processing arguments
-    parser.add_argument("--excel_file", type=str, required=True,
-                       help="Path to Excel file with character data")
+    # Batch processing arguments - now supports both Excel and TXT
+    parser.add_argument("--input_file", type=str, required=True,
+                       help="Path to input file (Excel .xlsx/.xls or TXT .txt)")
     parser.add_argument("--output_base_dir", type=str, default="./fontdiffuser_batch_output_optimized",
                        help="Base directory for all outputs")
     parser.add_argument("--skip_input_char", action="store_true",
-                       help="Skip generating the input character")
+                       help="Skip generating the input character (Excel only)")
     
     # Line range arguments
     parser.add_argument("--start_line", type=int, default=None,
-                       help="Starting line number in Excel (1-indexed, inclusive)")
+                       help="Starting line number (1-indexed, inclusive)")
     parser.add_argument("--end_line", type=int, default=None,
-                       help="Ending line number in Excel (1-indexed, inclusive)")
+                       help="Ending line number (1-indexed, inclusive)")
     parser.add_argument("--max_rows", type=int, default=None,
-                       help="Maximum number of rows to process (alternative to end_line)")
+                       help="Maximum number of rows/lines to process (alternative to end_line)")
     
     # Optimization arguments
     parser.add_argument("--optimize", action="store_true", default=True,
@@ -871,6 +1046,22 @@ def main_batch_processing_optimized():
     print(f"FONTDIFFUSER OPTIMIZED BATCH PROCESSING")
     print(f"{'='*70}")
     
+    # Check input file type
+    input_path = Path(args.input_file)
+    if not input_path.exists():
+        raise FileNotFoundError(f"Input file not found: {args.input_file}")
+    
+    if input_path.suffix.lower() in ['.xlsx', '.xls']:
+        input_type = "Excel"
+    elif input_path.suffix.lower() == '.txt':
+        input_type = "TXT"
+    else:
+        raise ValueError(f"Unsupported file format: {input_path.suffix}. "
+                       f"Supported formats: .xlsx, .xls, .txt")
+    
+    print(f"Input Type: {input_type} file")
+    print(f"Input File: {args.input_file}")
+    
     if args.start_line or args.end_line:
         print(f"Line Range: {args.start_line or 'start'} to {args.end_line or 'end'}")
     
@@ -908,10 +1099,10 @@ def main_batch_processing_optimized():
     # Create optimized processor
     processor = FontDiffuserBatchProcessorOptimized(args, pipe, font_manager)
     
-    # Process Excel file with optimizations
-    print(f"\nProcessing Excel file: {args.excel_file}")
-    results = processor.process_excel_file_optimized(
-        excel_path=args.excel_file,
+    # Process file with optimizations
+    print(f"\nProcessing {input_type} file: {args.input_file}")
+    results = processor.process_file_optimized(
+        input_path=args.input_file,
         base_output_dir=str(output_dir),
         style_image_path=args.style_image_path,
         generate_input_char=not args.skip_input_char,
@@ -934,33 +1125,62 @@ if __name__ == "__main__":
         sys.exit(1)
 
 
-"""Example - Optimized Batch Processing:
+"""Example - Excel Input:
 python sample_excel_optimized.py \
-    --excel_file "characters.xlsx" \
+    --input_file "characters.xlsx" \
     --style_image_path "./style/A.png" \
     --ckpt_dir "./checkpoints" \
     --ttf_path "./fonts/KaiXinSongA.ttf" \
     --output_base_dir "./font_generations_30_40" \
     --start_line 30 \
     --end_line 40 \
-    --fp16 \           # Enable FP16 for 2x speed
-    --fast_sampling \  # Use fewer steps
-    --inference_steps 15 \  # 15 steps instead of 20
-    --channels_last    # Better memory format
+    --fp16 \
+    --fast_sampling \
+    --inference_steps 15 \
+    --channels_last
 """
 
-"""Example - Ultra Fast Mode:
+"""Example - TXT Input (single character per line):
 python sample_excel_optimized.py \
-    --excel_file "characters.xlsx" \
+    --input_file "characters.txt" \
+    --style_image_path "./style/A.png" \
+    --ckpt_dir "./checkpoints" \
+    --ttf_path "./fonts/KaiXinSongA.ttf" \
+    --output_base_dir "./txt_output" \
+    --start_line 5 \
+    --end_line 15 \
+    --fp16 \
+    --fast_sampling \
+    --inference_steps 10
+"""
+
+"""Example - Ultra Fast Mode (TXT):
+python sample_excel_optimized.py \
+    --input_file "characters.txt" \
     --style_image_path "./style/A.png" \
     --ckpt_dir "./checkpoints" \
     --ttf_path "./fonts/KaiXinSongA.ttf" \
     --output_base_dir "./output_fast" \
     --fp16 \
     --fast_sampling \
-    --inference_steps 10 \  # Ultra fast
-    --compile \  # PyTorch 2.0 compilation
-    --max_rows 10  # Limit to 10 rows
+    --inference_steps 10 \
+    --compile \
+    --max_rows 20
+"""
+
+"""TXT File Format Example (characters.txt):
+# FontDiffuser character list
+A
+B
+C
+中
+文
+字
+体
+生成
+𠀖
+𠀗
+# More characters...
 """
 
 """Output Structure:
@@ -968,12 +1188,15 @@ font_generations_30_40/
 ├── batch_config.yaml
 ├── font_statistics.json
 ├── global_summary.json    # Includes performance metrics
-├── performance_report.txt
+├── global_summary.txt
 ├── debug/
 │   └── content_images/
-├── row_001_𠀖/
+├── row_001_𠀖/            # For Excel input
 │   ├── character_info.json
 │   ├── input_character/
 │   └── similar_characters/
+├── line_0005_A/           # For TXT input
+│   ├── character_info.json
+│   └── generated_character/
 └── ...
 """
