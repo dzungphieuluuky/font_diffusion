@@ -278,12 +278,21 @@ def load_characters(characters_arg: str) -> List[str]:
     """Load characters from comma-separated string or file"""
     if os.path.isfile(characters_arg):
         with open(characters_arg, 'r', encoding='utf-8') as f:
-            chars = [line.strip() for line in f if line.strip()]
+            # Split each line into individual characters
+            chars = []
+            for line in f:
+                line = line.strip()
+                if line:
+                    # If line contains comma-separated chars, split them
+                    if ',' in line:
+                        chars.extend([c.strip() for c in line.split(',') if c.strip()])
+                    else:
+                        # Otherwise treat each character separately
+                        chars.extend([c for c in line if c.strip()])
     else:
         chars = [c.strip() for c in characters_arg.split(',')]
     
     return chars
-
 
 def load_style_images(style_images_arg: str) -> List[str]:
     """Load style image paths from comma-separated string or directory"""
