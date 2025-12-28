@@ -316,17 +316,22 @@ def create_args_namespace(args):
     """Create args namespace for FontDiffuser pipeline"""
     from argparse import Namespace
     
-    # Import default config
     try:
         from configs.fontdiffuser import get_parser
         parser = get_parser()
         default_args = parser.parse_args([])
-    except:
+    except Exception:
         default_args = Namespace()
     
     # Override with user arguments
     for key, value in vars(args).items():
         setattr(default_args, key, value)
+    
+    # === CRITICAL FIX: Ensure image sizes are tuples ===
+    if isinstance(default_args.style_image_size, int):
+        default_args.style_image_size = (default_args.style_image_size, default_args.style_image_size)
+    if isinstance(default_args.content_image_size, int):
+        default_args.content_image_size = (default_args.content_image_size, default_args.content_image_size)
     
     # Set required attributes
     default_args.demo = False
@@ -334,39 +339,21 @@ def create_args_namespace(args):
     default_args.save_image = True
     default_args.cache_models = True
     default_args.controlnet = False
+    default_args.resolution = 96
     
-    # Image sizes
-    if not hasattr(default_args, 'style_image_size'):
-        default_args.style_image_size = (96, 96)
-    if not hasattr(default_args, 'content_image_size'):
-        default_args.content_image_size = (96, 96)
-    
-    # Generation parameters
-    if not hasattr(default_args, 'algorithm_type'):
-        default_args.algorithm_type = 'dpmsolver++'
-    if not hasattr(default_args, 'guidance_type'):
-        default_args.guidance_type = 'classifier-free'
-    if not hasattr(default_args, 'method'):
-        default_args.method = 'multistep'
-    if not hasattr(default_args, 'order'):
-        default_args.order = 2
-    if not hasattr(default_args, 'model_type'):
-        default_args.model_type = 'noise'
-    if not hasattr(default_args, 't_start'):
-        default_args.t_start = 1.0
-    if not hasattr(default_args, 't_end'):
-        default_args.t_end = 1e-3
-    if not hasattr(default_args, 'skip_type'):
-        default_args.skip_type = 'time_uniform'
-    if not hasattr(default_args, 'correcting_x0_fn'):
-        default_args.correcting_x0_fn = None
-    if not hasattr(default_args, 'content_encoder_downsample_size'):
-        default_args.content_encoder_downsample_size = 3
-    if not hasattr(default_args, 'resolution'):
-        default_args.resolution = 96
+    # Generation parameters (ensure they exist)
+    default_args.algorithm_type = getattr(default_args, 'algorithm_type', 'dpmsolver++')
+    default_args.guidance_type = getattr(default_args, 'guidance_type', 'classifier-free')
+    default_args.method = getattr(default_args, 'method', 'multistep')
+    default_args.order = getattr(default_args, 'order', 2)
+    default_args.model_type = getattr(default_args, 'model_type', 'noise')
+    default_args.t_start = getattr(default_args, 't_start', 1.0)
+    default_args.t_end = getattr(default_args, 't_end', 1e-3)
+    default_args.skip_type = getattr(default_args, 'skip_type', 'time_uniform')
+    default_args.correcting_x0_fn = getattr(default_args, 'correcting_x0_fn', None)
+    default_args.content_encoder_downsample_size = getattr(default_args, 'content_encoder_downsample_size', 3)
     
     return default_args
-
 
 def generate_content_images(characters: List[str], font_manager: FontManager,
                            output_dir: str, args) -> Dict[str, Dict[str, str]]:
