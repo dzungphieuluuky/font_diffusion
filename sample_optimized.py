@@ -1,6 +1,8 @@
 """
-Optimized sampling for FontDiffuser - SAFE with pretrained weights
-Enhanced with additional optimizations for batch processing
+Optimized sampling for FontDiffuser with SAFE optimizations
+- Multi-character batch processing
+- Multi-font support
+- Performance optimizations without changing model architecture
 """
 
 import os
@@ -9,15 +11,20 @@ import time
 import random
 import numpy as np
 from PIL import Image
+from pathlib import Path
+from typing import List, Optional, Tuple, Dict
 from functools import lru_cache
-from typing import Optional, Tuple, List
 
 import torch
 import torchvision.transforms as transforms
 from accelerate.utils import set_seed
 
 from src import (FontDiffuserDPMPipeline,
-                 FontDiffuserModelDPM)
+                 FontDiffuserModelDPM,
+                 build_ddpm_scheduler,
+                 build_unet,
+                 build_content_encoder,
+                 build_style_encoder)
 from utils import (ttf2im,
                    load_ttf,
                    is_char_in_font,
@@ -26,10 +33,7 @@ from utils import (ttf2im,
                    save_image_with_content_style)
 
 
-def arg_parse_optimized():
-    """
-    Parse arguments with SAFE optimization options
-    """
+def arg_parse():
     from configs.fontdiffuser import get_parser
 
     parser = get_parser()
@@ -37,135 +41,251 @@ def arg_parse_optimized():
     # Original arguments
     parser.add_argument("--ckpt_dir", type=str, default=None)
     parser.add_argument("--demo", action="store_true")
-    parser.add_argument("--controlnet", type=bool, default=False)
+    parser.add_argument("--controlnet", type=bool, default=False, 
+                        help="If in demo mode, the controlnet can be added.")
     parser.add_argument("--character_input", action="store_true")
-    parser.add_argument("--content_character", type=str, default=None)
+    parser.add_argument("--content_character", type=str, default=None,
+                        help="Single character, comma-separated list, or path to txt file")
+    parser.add_argument("--characters_file", type=str, default=None,
+                        help="Path to text file with one character per line")
     parser.add_argument("--content_image_path", type=str, default=None)
     parser.add_argument("--style_image_path", type=str, default=None)
     parser.add_argument("--save_image", action="store_true")
-    parser.add_argument("--save_image_dir", type=str, default=None)
+    parser.add_argument("--save_image_dir", type=str, default=None,
+                        help="The saving directory.")
     parser.add_argument("--device", type=str, default="cuda:0")
-    parser.add_argument("--ttf_path", type=str, default="ttf/KaiXinSongA.ttf")
+    parser.add_argument("--ttf_path", type=str, default="ttf/KaiXinSongA.ttf",
+                        help="Path to single TTF file or directory with multiple fonts")
     
-    # SAFE optimization arguments (don't affect model weights)
-    parser.add_argument("--fp16", action="store_true", default=True,
-                       help="Use half precision (FP16) - SAFE for inference")
-    parser.add_argument("--compile", action="store_true", default=False,
-                       help="Use torch.compile() - PyTorch 2.0 only, SAFE")
-    parser.add_argument("--channels_last", action="store_true", default=True,
-                       help="Use channels last memory format - SAFE")
-    parser.add_argument("--cache_models", action="store_true", default=True,
-                       help="Cache model builds - SAFE")
-    parser.add_argument("--fast_sampling", action="store_true", default=False,
-                       help="Use fewer sampling steps - SAFE (affects quality)")
-    parser.add_argument("--inference_steps", type=int, default=None,
-                       help="Override num_inference_steps - SAFE")
-    parser.add_argument("--warmup", action="store_true", default=False,
-                       help="Run warmup iteration - SAFE")
+    # SAFE optimization arguments (don't change model architecture)
+    parser.add_argument("--fp16", action="store_true", default=False,
+                       help="Use FP16 precision (SAFE - applied after loading weights)")
     parser.add_argument("--batch_size", type=int, default=1,
-                       help="Batch size for inference - SAFE")
-    parser.add_argument("--enable_xformers", action="store_true", default=False,
-                       help="Enable xformers memory efficient attention")
-    parser.add_argument("--enable_attention_slicing", action="store_true", default=False,
-                       help="Enable attention slicing to reduce memory")
-    parser.add_argument("--enable_vae_slicing", action="store_true", default=False,
-                       help="Enable VAE slicing to reduce memory")
+                       help="Batch size for processing multiple characters")
+    parser.add_argument("--channels_last", action="store_true", default=False,
+                       help="Use channels-last memory format (SAFE)")
+    parser.add_argument("--deterministic", action="store_true", default=False,
+                       help="Use deterministic algorithms for reproducibility")
     
     args = parser.parse_args()
     
-    # Apply image size transformations
     style_image_size = args.style_image_size
     content_image_size = args.content_image_size
     args.style_image_size = (style_image_size, style_image_size)
     args.content_image_size = (content_image_size, content_image_size)
-    
-    # Adjust steps for fast sampling (SAFE - doesn't affect weights)
-    if args.fast_sampling and args.inference_steps is None:
-        args.inference_steps = min(15, args.num_inference_steps)  # Cap at 15
-        print(f"Fast sampling: Reducing steps to {args.inference_steps}")
-    
-    if args.inference_steps:
-        args.num_inference_steps = args.inference_steps
-    
+
     return args
 
 
-@lru_cache(maxsize=128)
-def load_ttf_cached(ttf_path):
-    """Cached font loading"""
-    return load_ttf(ttf_path=ttf_path)
-
-
-@lru_cache(maxsize=1024)
-def is_char_in_font_cached(font_path, char):
-    """Cached character check"""
-    return is_char_in_font(font_path=font_path, char=char)
-
-
-def image_process_optimized(args, content_image=None, style_image=None, 
-                           content_character=None):
-    """Optimized image processing with caching"""
-    char_to_use = content_character if content_character else args.content_character
+class FontManager:
+    """Manages single or multiple font files"""
     
-    if not args.demo:
-        if args.character_input:
-            assert char_to_use is not None, "content_character required"
+    def __init__(self, ttf_path: str):
+        self.fonts = {}
+        self.font_paths = []
+        self._load_fonts(ttf_path)
+    
+    def _load_fonts(self, ttf_path: str):
+        """Load font(s) from path"""
+        if os.path.isfile(ttf_path):
+            # Single font file
+            self.font_paths = [ttf_path]
+            font_name = os.path.splitext(os.path.basename(ttf_path))[0]
+            self.fonts[font_name] = {
+                'path': ttf_path,
+                'font': None,  # Lazy load
+                'name': font_name
+            }
+            print(f"✓ Font loaded: {font_name}")
             
-            if not is_char_in_font_cached(args.ttf_path, char_to_use):
-                return None, None, None
+        elif os.path.isdir(ttf_path):
+            # Directory with multiple fonts
+            font_extensions = {'.ttf', '.otf', '.TTF', '.OTF'}
+            font_files = [
+                os.path.join(ttf_path, f)
+                for f in os.listdir(ttf_path)
+                if os.path.splitext(f)[1] in font_extensions
+            ]
             
-            font = load_ttf_cached(args.ttf_path)
-            content_image = ttf2im(font=font, char=char_to_use)
-            content_image_pil = content_image.copy()
+            if not font_files:
+                raise ValueError(f"No font files found in directory: {ttf_path}")
+            
+            self.font_paths = sorted(font_files)
+            
+            print(f"\n{'='*60}")
+            print(f"Loading {len(font_files)} fonts from directory...")
+            print('='*60)
+            
+            for font_path in self.font_paths:
+                font_name = os.path.splitext(os.path.basename(font_path))[0]
+                self.fonts[font_name] = {
+                    'path': font_path,
+                    'font': None,  # Lazy load
+                    'name': font_name
+                }
+                print(f"✓ {font_name}")
+            
+            print('='*60)
+            print(f"Loaded {len(self.fonts)} fonts\n")
         else:
-            content_image = Image.open(args.content_image_path).convert('RGB')
-            content_image_pil = None
+            raise ValueError(f"Invalid ttf_path: {ttf_path}")
+    
+    def get_font_names(self) -> List[str]:
+        """Get list of loaded font names"""
+        return list(self.fonts.keys())
+    
+    @lru_cache(maxsize=32)
+    def get_font(self, font_name: str):
+        """Get font object by name (cached)"""
+        if font_name not in self.fonts:
+            raise ValueError(f"Font not found: {font_name}")
         
-        style_image = Image.open(args.style_image_path).convert('RGB')
-    else:
-        assert style_image is not None, "style image required"
-        if args.character_input:
-            assert char_to_use is not None, "content_character required"
-            if not is_char_in_font_cached(args.ttf_path, char_to_use):
-                return None, None, None
-            font = load_ttf_cached(args.ttf_path)
-            content_image = ttf2im(font=font, char=char_to_use)
+        # Lazy load font
+        if self.fonts[font_name]['font'] is None:
+            self.fonts[font_name]['font'] = load_ttf(self.fonts[font_name]['path'])
+        
+        return self.fonts[font_name]['font']
+    
+    def get_font_path(self, font_name: str) -> str:
+        """Get font file path by name"""
+        if font_name not in self.fonts:
+            raise ValueError(f"Font not found: {font_name}")
+        return self.fonts[font_name]['path']
+    
+    @lru_cache(maxsize=1024)
+    def is_char_in_font(self, font_name: str, char: str) -> bool:
+        """Check if character exists in font (cached)"""
+        font_path = self.get_font_path(font_name)
+        return is_char_in_font(font_path=font_path, char=char)
+    
+    def get_available_chars_for_font(self, font_name: str, 
+                                     characters: List[str]) -> List[str]:
+        """Get list of characters available in specific font"""
+        return [
+            char for char in characters 
+            if self.is_char_in_font(font_name, char)
+        ]
+
+
+def parse_characters(content_character: str = None, characters_file: str = None) -> List[str]:
+    """
+    Parse character input from multiple sources
+    
+    Args:
+        content_character: Single character, comma-separated list, or path to txt file
+        characters_file: Path to text file with one character per line
+    
+    Returns:
+        List of individual characters
+    """
+    chars = []
+    
+    # Priority 1: characters_file argument
+    if characters_file and os.path.isfile(characters_file):
+        print(f"Loading characters from file: {characters_file}")
+        with open(characters_file, 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith('#'):  # Skip empty lines and comments
+                    # Each line should be a single character
+                    if len(line) == 1:
+                        chars.append(line)
+                    else:
+                        # If line has multiple chars, treat each as separate
+                        chars.extend(list(line))
+        print(f"  Loaded {len(chars)} characters")
+        return chars
+    
+    # Priority 2: content_character argument
+    if content_character:
+        # Check if it's a file path
+        if os.path.isfile(content_character):
+            print(f"Loading characters from file: {content_character}")
+            with open(content_character, 'r', encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith('#'):
+                        if len(line) == 1:
+                            chars.append(line)
+                        else:
+                            chars.extend(list(line))
+            print(f"  Loaded {len(chars)} characters")
+            return chars
+        
+        # Check if comma-separated
+        if ',' in content_character:
+            chars = [c.strip() for c in content_character.split(',') if c.strip()]
         else:
-            assert content_image is not None, "content image required"
-        content_image_pil = None
+            # Single character
+            chars = [content_character.strip()] if len(content_character.strip()) == 1 else list(content_character.strip())
     
-    # Use cached transforms
-    content_transform = get_content_transform(args)
-    style_transform = get_style_transform(args)
+    return chars
+
+
+@lru_cache(maxsize=2)
+def get_content_transform(content_image_size: tuple):
+    """Cached content transform"""
+    return transforms.Compose([
+        transforms.Resize(content_image_size, 
+                         interpolation=transforms.InterpolationMode.BILINEAR),
+        transforms.ToTensor(),
+        transforms.Normalize([0.5], [0.5])
+    ])
+
+
+@lru_cache(maxsize=2)
+def get_style_transform(style_image_size: tuple):
+    """Cached style transform"""
+    return transforms.Compose([
+        transforms.Resize(style_image_size,
+                         interpolation=transforms.InterpolationMode.BILINEAR),
+        transforms.ToTensor(),
+        transforms.Normalize([0.5], [0.5])
+    ])
+
+
+def image_process_batch(args, characters: List[str], font_manager: FontManager, 
+                       font_name: str, style_image_path: str) -> Tuple:
+    """
+    Process multiple characters in batch
     
-    content_image = content_transform(content_image)[None, :]
-    style_image = style_transform(style_image)[None, :]
-
-    return content_image, style_image, content_image_pil
-
-
-def image_process_batch_optimized(args, content_characters: List[str], 
-                                  style_image_path: str):
-    """Batch image processing for multiple characters with single style"""
+    Args:
+        args: Arguments
+        characters: List of characters to process
+        font_manager: FontManager instance
+        font_name: Name of font to use
+        style_image_path: Path to style image
+    
+    Returns:
+        Tuple of (content_batch, style_batch, content_pils, valid_chars)
+    """
+    # Load style image
     style_image = Image.open(style_image_path).convert('RGB')
-    style_transform = get_style_transform(args)
+    style_transform = get_style_transform(args.style_image_size)
     
-    font = load_ttf_cached(args.ttf_path)
-    content_transform = get_content_transform(args)
+    # Get font
+    font = font_manager.get_font(font_name)
+    content_transform = get_content_transform(args.content_image_size)
     
+    # Get available characters
+    available_chars = font_manager.get_available_chars_for_font(font_name, characters)
+    
+    if not available_chars:
+        print(f"Warning: No characters available in font '{font_name}'")
+        return None, None, None, None
+    
+    # Generate content images
     content_images = []
     content_images_pil = []
-    valid_chars = []
     
-    for char in content_characters:
-        if not is_char_in_font_cached(args.ttf_path, char):
-            print(f"Warning: Character '{char}' not in font, skipping...")
+    for char in available_chars:
+        try:
+            content_image = ttf2im(font=font, char=char)
+            content_images_pil.append(content_image.copy())
+            content_images.append(content_transform(content_image))
+        except Exception as e:
+            print(f"Error processing character '{char}': {e}")
             continue
-        
-        content_image = ttf2im(font=font, char=char)
-        content_images_pil.append(content_image.copy())
-        content_images.append(content_transform(content_image))
-        valid_chars.append(char)
     
     if not content_images:
         return None, None, None, None
@@ -174,116 +294,98 @@ def image_process_batch_optimized(args, content_characters: List[str],
     content_batch = torch.stack(content_images)
     style_batch = style_transform(style_image)[None, :].repeat(len(content_images), 1, 1, 1)
     
-    return content_batch, style_batch, content_images_pil, valid_chars
+    return content_batch, style_batch, content_images_pil, available_chars
 
 
-def get_content_transform(args):
-    """Cached content transform"""
-    return transforms.Compose([
-        transforms.Resize(args.content_image_size, 
-                         interpolation=transforms.InterpolationMode.BILINEAR),
-        transforms.ToTensor(),
-        transforms.Normalize([0.5], [0.5])
-    ])
-
-
-def get_style_transform(args):
-    """Cached style transform"""
-    return transforms.Compose([
-        transforms.Resize(args.style_image_size,
-                         interpolation=transforms.InterpolationMode.BILINEAR),
-        transforms.ToTensor(),
-        transforms.Normalize([0.5], [0.5])
-    ])
-
-
-def load_fontdiffuser_pipeline_safe(args):
+def image_process(args, content_image=None, style_image=None, 
+                 content_character=None, font_manager=None, font_name=None):
     """
-    SAFE pipeline loading - maintains exact model architecture
+    Original single-image processing (maintained for compatibility)
     """
-    print("Loading FontDiffuser model with SAFE optimizations...")
+    char_to_use = content_character if content_character else args.content_character
     
-    # Determine precision
-    dtype = torch.float16 if args.fp16 else torch.float32
-    
-    # Import original build functions to ensure architecture compatibility
-    try:
-        # Try to import optimized versions
-        from src import (
-            build_unet_optimized,
-            build_style_encoder_optimized,
-            build_content_encoder_optimized,
-            build_ddpm_scheduler_optimized
-        )
+    if not args.demo:
+        # Read content image and style image
+        if args.character_input:
+            assert char_to_use is not None, "The content_character should not be None."
+            
+            if font_manager and font_name:
+                if not font_manager.is_char_in_font(font_name, char_to_use):
+                    return None, None, None
+                font = font_manager.get_font(font_name)
+            else:
+                if not is_char_in_font(font_path=args.ttf_path, char=char_to_use):
+                    return None, None, None
+                font = load_ttf(ttf_path=args.ttf_path)
+            
+            content_image = ttf2im(font=font, char=char_to_use)
+            content_image_pil = content_image.copy()
+        else:
+            content_image = Image.open(args.content_image_path).convert('RGB')
+            content_image_pil = None
         
-        # Use optimized builders (they maintain architecture)
-        unet = build_unet_optimized(args, optimize=args.channels_last)
-        style_encoder = build_style_encoder_optimized(args, optimize=args.channels_last)
-        content_encoder = build_content_encoder_optimized(args, optimize=args.channels_last)
+        style_image = Image.open(args.style_image_path).convert('RGB')
+    else:
+        assert style_image is not None, "The style image should not be None."
+        if args.character_input:
+            assert char_to_use is not None, "The content_character should not be None."
+            
+            if font_manager and font_name:
+                if not font_manager.is_char_in_font(font_name, char_to_use):
+                    return None, None, None
+                font = font_manager.get_font(font_name)
+            else:
+                if not is_char_in_font(font_path=args.ttf_path, char=char_to_use):
+                    return None, None, None
+                font = load_ttf(ttf_path=args.ttf_path)
+            
+            content_image = ttf2im(font=font, char=char_to_use)
+        else:
+            assert content_image is not None, "The content image should not be None."
+        content_image_pil = None
         
-    except ImportError:
-        # Fallback to original build.py
-        print("⚠ Using original build.py for maximum compatibility")
-        from src import (
-            build_unet,
-            build_style_encoder,
-            build_content_encoder,
-            build_ddpm_scheduler
-        )
-        unet = build_unet(args)
-        style_encoder = build_style_encoder(args)
-        content_encoder = build_content_encoder(args)
-        build_ddpm_scheduler_optimized = build_ddpm_scheduler
+    # Use cached transforms
+    content_transform = get_content_transform(args.content_image_size)
+    style_transform = get_style_transform(args.style_image_size)
     
-    # Load weights (these MUST match the architecture)
-    print(f"Loading weights from {args.ckpt_dir}...")
+    content_image = content_transform(content_image)[None, :]
+    style_image = style_transform(style_image)[None, :]
+
+    return content_image, style_image, content_image_pil
+
+
+def load_fontdiffuser_pipeline(args):
+    """
+    Load FontDiffuser pipeline with SAFE optimizations
+    Only applies optimizations that don't change model architecture
+    """
+    print("Loading FontDiffuser pipeline...")
     
-    # Load with map_location to handle device placement
-    unet_state_dict = torch.load(f"{args.ckpt_dir}/unet.pth", map_location='cpu')
-    style_state_dict = torch.load(f"{args.ckpt_dir}/style_encoder.pth", map_location='cpu')
-    content_state_dict = torch.load(f"{args.ckpt_dir}/content_encoder.pth", map_location='cpu')
+    # Load the model state_dict (original architecture preserved)
+    unet = build_unet(args=args)
+    unet.load_state_dict(torch.load(f"{args.ckpt_dir}/unet.pth", map_location='cpu'))
     
-    # Load state dicts
-    unet.load_state_dict(unet_state_dict)
-    style_encoder.load_state_dict(style_state_dict)
-    content_encoder.load_state_dict(content_state_dict)
+    style_encoder = build_style_encoder(args=args)
+    style_encoder.load_state_dict(torch.load(f"{args.ckpt_dir}/style_encoder.pth", map_location='cpu'))
     
-    print("✓ Model weights loaded successfully")
+    content_encoder = build_content_encoder(args=args)
+    content_encoder.load_state_dict(torch.load(f"{args.ckpt_dir}/content_encoder.pth", map_location='cpu'))
     
-    # Apply precision conversion (SAFE - after loading weights)
+    print("✓ Loaded model state_dict successfully")
+    
+    # SAFE: Apply FP16 conversion AFTER loading weights
     if args.fp16:
         print("Converting to FP16 precision...")
         unet = unet.half()
         style_encoder = style_encoder.half()
         content_encoder = content_encoder.half()
     
-    # Apply memory efficient attention if available
-    if args.enable_xformers:
-        try:
-            import xformers
-            unet.enable_xformers_memory_efficient_attention()
-            print("✓ xformers memory efficient attention enabled")
-        except Exception as e:
-            print(f"⚠ xformers not available: {e}")
-    
-    # Apply attention slicing
-    if args.enable_attention_slicing:
-        try:
-            unet.set_attention_slice("auto")
-            print("✓ Attention slicing enabled")
-        except Exception as e:
-            print(f"⚠ Attention slicing failed: {e}")
-    
-    # Apply torch.compile if requested (PyTorch 2.0+)
-    if args.compile and hasattr(torch, 'compile'):
-        print("Compiling models with torch.compile...")
-        try:
-            unet = torch.compile(unet, mode="reduce-overhead")
-            style_encoder = torch.compile(style_encoder, mode="reduce-overhead")
-            content_encoder = torch.compile(content_encoder, mode="reduce-overhead")
-            print("✓ Models compiled successfully")
-        except Exception as e:
-            print(f"⚠ torch.compile failed: {e}, continuing without compilation")
+    # SAFE: Apply channels-last memory format (doesn't change computation)
+    if args.channels_last:
+        print("Converting to channels-last memory format...")
+        unet = unet.to(memory_format=torch.channels_last)
+        style_encoder = style_encoder.to(memory_format=torch.channels_last)
+        content_encoder = content_encoder.to(memory_format=torch.channels_last)
     
     # Create model
     model = FontDiffuserModelDPM(
@@ -293,16 +395,17 @@ def load_fontdiffuser_pipeline_safe(args):
     )
     
     # Move to device with proper dtype
+    dtype = torch.float16 if args.fp16 else torch.float32
     model.to(args.device, dtype=dtype)
     model.eval()  # Set to evaluation mode
     
     print("✓ Model moved to device")
-    
-    # Load scheduler
-    train_scheduler = build_ddpm_scheduler_optimized(args)
-    print("✓ DDPM scheduler loaded")
-    
-    # Create pipeline
+
+    # Load the training ddpm_scheduler
+    train_scheduler = build_ddpm_scheduler(args=args)
+    print("✓ Loaded training DDPM scheduler successfully")
+
+    # Load the DPM_Solver to generate the sample
     pipe = FontDiffuserDPMPipeline(
         model=model,
         ddpm_train_scheduler=train_scheduler,
@@ -310,122 +413,62 @@ def load_fontdiffuser_pipeline_safe(args):
         guidance_type=args.guidance_type,
         guidance_scale=args.guidance_scale,
     )
-    
-    print("✓ FontDiffuser pipeline loaded with SAFE optimizations!")
+    print("✓ Loaded DPM-Solver pipeline successfully")
+
     return pipe
 
 
-@lru_cache(maxsize=1)
-def get_fontdiffuser_pipeline_cached(args_tuple):
-    """Cached pipeline for repeated inference"""
-    # Convert tuple back to args object
-    class Args:
-        pass
-    args = Args()
-    for key, value in args_tuple:
-        setattr(args, key, value)
-    return load_fontdiffuser_pipeline_safe(args)
-
-
-def args_to_tuple(args):
-    """Convert args to hashable tuple for caching"""
-    important_attrs = ['ckpt_dir', 'device', 'fp16', 'compile', 'channels_last',
-                       'model_type', 'guidance_type', 'guidance_scale',
-                       'enable_xformers', 'enable_attention_slicing']
-    return tuple((attr, getattr(args, attr, None)) for attr in important_attrs)
-
-
-def sampling_optimized(args, pipe=None, content_image=None, style_image=None,
-                      content_character=None):
-    """Optimized sampling with safe optimizations"""
-    if not args.demo:
-        os.makedirs(args.save_image_dir, exist_ok=True)
-        save_args_to_yaml(args=args, output_file=f"{args.save_image_dir}/sampling_config.yaml")
-
-    if args.seed:
-        set_seed(seed=args.seed)
+def sampling_batch(args, pipe, characters: List[str], font_manager: FontManager,
+                  font_name: str, style_image_path: str, style_name: str = "style0",
+                  save_content_images: bool = True) -> Tuple[List, List, float]:
+    """
+    Batch sampling for multiple characters with single font and style
     
-    # Use cached pipeline
-    if pipe is None and args.cache_models:
-        pipe = get_fontdiffuser_pipeline_cached(args_to_tuple(args))
+    Args:
+        args: Arguments
+        pipe: Pipeline
+        characters: List of characters
+        font_manager: FontManager instance
+        font_name: Font name
+        style_image_path: Path to style image
+        style_name: Name of style (e.g., "style0")
+        save_content_images: Whether to save content character images
     
-    content_image_tensor, style_image_tensor, content_image_pil = image_process_optimized(
-        args=args, 
-        content_image=content_image, 
-        style_image=style_image,
-        content_character=content_character
-    )
-    
-    if content_image_tensor is None:
-        print("Character not in font. Please change character or font.")
-        return None
-
-    with torch.no_grad():
-        # Move to device with proper dtype
-        dtype = torch.float16 if args.fp16 else torch.float32
-        content_image_tensor = content_image_tensor.to(args.device, dtype=dtype)
-        style_image_tensor = style_image_tensor.to(args.device, dtype=dtype)
-        
-        start = time.perf_counter()
-        
-        images = pipe.generate(
-            content_images=content_image_tensor,
-            style_images=style_image_tensor,
-            batch_size=1,
-            order=args.order,
-            num_inference_step=args.num_inference_steps,
-            content_encoder_downsample_size=args.content_encoder_downsample_size,
-            t_start=args.t_start,
-            t_end=args.t_end,
-            dm_size=args.content_image_size,
-            algorithm_type=args.algorithm_type,
-            skip_type=args.skip_type,
-            method=args.method,
-            correcting_x0_fn=args.correcting_x0_fn)
-        
-        end = time.perf_counter()
-        inference_time = end - start
-        
-        if args.save_image:
-            save_single_image(save_dir=args.save_image_dir, image=images[0])
-            if args.character_input:
-                save_image_with_content_style(
-                    save_dir=args.save_image_dir,
-                    image=images[0],
-                    content_image_pil=content_image_pil,
-                    content_image_path=None,
-                    style_image_path=args.style_image_path,
-                    resolution=args.resolution
-                )
-            else:
-                save_image_with_content_style(
-                    save_dir=args.save_image_dir,
-                    image=images[0],
-                    content_image_pil=None,
-                    content_image_path=args.content_image_path,
-                    style_image_path=args.style_image_path,
-                    resolution=args.resolution
-                )
-        
-        return images[0], inference_time
-
-
-def sampling_batch_optimized(args, pipe, content_characters: List[str], 
-                             style_image_path: str):
-    """Batch sampling for multiple characters"""
-    content_batch, style_batch, content_pils, valid_chars = image_process_batch_optimized(
-        args, content_characters, style_image_path
+    Returns:
+        Tuple of (images, valid_chars, inference_time)
+    """
+    # Process images in batch
+    content_batch, style_batch, content_pils, valid_chars = image_process_batch(
+        args, characters, font_manager, font_name, style_image_path
     )
     
     if content_batch is None:
-        return None, None, None
+        return None, None, 0.0
+    
+    # Set seed for reproducibility
+    if args.seed:
+        set_seed(seed=args.seed)
+    
+    # Save content images if requested
+    if save_content_images and args.save_image:
+        content_dir = os.path.join(args.save_image_dir, "ContentImage", font_name)
+        os.makedirs(content_dir, exist_ok=True)
+        
+        for char, pil_img in zip(valid_chars, content_pils):
+            pil_img.save(os.path.join(content_dir, f"{char}.png"))
     
     with torch.no_grad():
         dtype = torch.float16 if args.fp16 else torch.float32
         content_batch = content_batch.to(args.device, dtype=dtype)
         style_batch = style_batch.to(args.device, dtype=dtype)
         
-        start = time.perf_counter()
+        # Apply channels-last if enabled
+        if args.channels_last:
+            content_batch = content_batch.to(memory_format=torch.channels_last)
+            style_batch = style_batch.to(memory_format=torch.channels_last)
+        
+        print(f"  Sampling {len(valid_chars)} characters with DPM-Solver++ ...")
+        start = time.time()
         
         # Process in batches
         all_images = []
@@ -448,45 +491,299 @@ def sampling_batch_optimized(args, pipe, content_characters: List[str],
                 algorithm_type=args.algorithm_type,
                 skip_type=args.skip_type,
                 method=args.method,
-                correcting_x0_fn=args.correcting_x0_fn)
+                correcting_x0_fn=args.correcting_x0_fn
+            )
             
             all_images.extend(images)
         
-        end = time.perf_counter()
-        total_time = end - start
+        end = time.time()
+        inference_time = end - start
         
-        return all_images, valid_chars, total_time
+        # Save generated images
+        if args.save_image:
+            target_dir = os.path.join(args.save_image_dir, "TargetImage", font_name, style_name)
+            os.makedirs(target_dir, exist_ok=True)
+            
+            for char, img in zip(valid_chars, all_images):
+                img_name = f"{style_name}+{char}.png"
+                save_single_image(save_dir=target_dir, image=img, image_name=img_name)
+        
+        print(f"  ✓ Generated {len(all_images)} images in {inference_time:.2f}s ({inference_time/len(all_images):.3f}s/img)")
+        
+        return all_images, valid_chars, inference_time
+
+
+def sampling(args, pipe, content_image=None, style_image=None, 
+            font_manager=None, font_name=None):
+    """
+    Original single-image sampling (maintained for compatibility)
+    """
+    if not args.demo:
+        os.makedirs(args.save_image_dir, exist_ok=True)
+        # saving sampling config
+        save_args_to_yaml(args=args, output_file=f"{args.save_image_dir}/sampling_config.yaml")
+
+    if args.seed:
+        set_seed(seed=args.seed)
+    
+    content_image, style_image, content_image_pil = image_process(
+        args=args, 
+        content_image=content_image, 
+        style_image=style_image,
+        font_manager=font_manager,
+        font_name=font_name
+    )
+    
+    if content_image is None:
+        print(f"The content_character you provided is not in the ttf. "
+              f"Please change the content_character or you can change the ttf.")
+        return None
+
+    with torch.no_grad():
+        dtype = torch.float16 if args.fp16 else torch.float32
+        content_image = content_image.to(args.device, dtype=dtype)
+        style_image = style_image.to(args.device, dtype=dtype)
+        
+        # Apply channels-last if enabled
+        if args.channels_last:
+            content_image = content_image.to(memory_format=torch.channels_last)
+            style_image = style_image.to(memory_format=torch.channels_last)
+        
+        print(f"Sampling by DPM-Solver++ ......")
+        start = time.time()
+        images = pipe.generate(
+            content_images=content_image,
+            style_images=style_image,
+            batch_size=1,
+            order=args.order,
+            num_inference_step=args.num_inference_steps,
+            content_encoder_downsample_size=args.content_encoder_downsample_size,
+            t_start=args.t_start,
+            t_end=args.t_end,
+            dm_size=args.content_image_size,
+            algorithm_type=args.algorithm_type,
+            skip_type=args.skip_type,
+            method=args.method,
+            correcting_x0_fn=args.correcting_x0_fn)
+        end = time.time()
+
+        if args.save_image:
+            print(f"Saving the image ......")
+            save_single_image(save_dir=args.save_image_dir, image=images[0])
+            if args.character_input:
+                save_image_with_content_style(save_dir=args.save_image_dir,
+                                            image=images[0],
+                                            content_image_pil=content_image_pil,
+                                            content_image_path=None,
+                                            style_image_path=args.style_image_path,
+                                            resolution=args.resolution)
+            else:
+                save_image_with_content_style(save_dir=args.save_image_dir,
+                                            image=images[0],
+                                            content_image_pil=None,
+                                            content_image_path=args.content_image_path,
+                                            style_image_path=args.style_image_path,
+                                            resolution=args.resolution)
+            print(f"Finish the sampling process, costing time {end - start}s")
+        
+        return images[0]
 
 
 def main():
-    """Main function with safe optimizations"""
-    args = arg_parse_optimized()
+    args = arg_parse()
     
     print("\n" + "="*60)
-    print("FONTDIFFUSER - SAFE OPTIMIZED INFERENCE")
+    print("FONTDIFFUSER - OPTIMIZED SAMPLING")
     print("="*60)
-    print(f"Model weights: {args.ckpt_dir}")
+    print(f"Model: {args.ckpt_dir}")
     print(f"Device: {args.device}")
-    print(f"Inference steps: {args.num_inference_steps}")
-    print(f"Batch size: {args.batch_size}")
-    print(f"Optimizations:")
-    print(f"  • FP16: {args.fp16}")
-    print(f"  • torch.compile: {args.compile}")
-    print(f"  • Channels last: {args.channels_last}")
-    print(f"  • Model caching: {args.cache_models}")
-    print(f"  • Fast sampling: {args.fast_sampling}")
-    print(f"  • xformers: {args.enable_xformers}")
-    print(f"  • Attention slicing: {args.enable_attention_slicing}")
+    print(f"FP16: {args.fp16}")
+    print(f"Channels Last: {args.channels_last}")
+    print(f"Batch Size: {args.batch_size}")
     print("="*60 + "\n")
     
-    # Load and run
-    pipe = load_fontdiffuser_pipeline_safe(args)
-    out_image, inf_time = sampling_optimized(args=args, pipe=pipe)
+    # Load pipeline
+    pipe = load_fontdiffuser_pipeline(args=args)
     
-    print(f"\n✓ Inference completed in {inf_time:.2f}s")
+    # Parse characters from file or argument
+    characters = parse_characters(args.content_character, args.characters_file)
     
-    return out_image
+    # Check if multi-character or multi-font mode
+    if args.character_input and characters:
+        
+        if len(characters) > 1 or os.path.isdir(args.ttf_path):
+            # Multi-character or multi-font mode
+            print(f"\n{'='*60}")
+            print("BATCH MODE ACTIVATED")
+            print(f"Characters: {len(characters)} - {characters[:10]}{'...' if len(characters) > 10 else ''}")
+            print('='*60)
+            
+            # Load font manager
+            font_manager = FontManager(args.ttf_path)
+            font_names = font_manager.get_font_names()
+            
+            if not args.demo:
+                os.makedirs(args.save_image_dir, exist_ok=True)
+                save_args_to_yaml(args=args, output_file=f"{args.save_image_dir}/sampling_config.yaml")
+            
+            # Determine style name from path
+            style_name = os.path.splitext(os.path.basename(args.style_image_path))[0]
+            
+            # Process each font
+            total_generated = 0
+            for font_idx, font_name in enumerate(font_names):
+                print(f"\n{'='*60}")
+                print(f"[Font {font_idx+1}/{len(font_names)}] {font_name}")
+                print('='*60)
+                
+                # Get available characters
+                available = font_manager.get_available_chars_for_font(font_name, characters)
+                print(f"  Available characters: {len(available)}/{len(characters)}")
+                
+                if not available:
+                    print("  ⚠ Skipping font (no characters available)")
+                    continue
+                
+                # Sample in batch
+                images, valid_chars, inf_time = sampling_batch(
+                    args, pipe, characters, font_manager, 
+                    font_name, args.style_image_path, style_name,
+                    save_content_images=True
+                )
+                
+                if images is None:
+                    continue
+                
+                total_generated += len(images)
+            
+            print("\n" + "="*60)
+            print("✓ BATCH PROCESSING COMPLETE")
+            print("="*60)
+            print(f"Total images generated: {total_generated}")
+            print(f"\nOutput structure:")
+            print(f"  {args.save_image_dir}/")
+            print(f"    ├── ContentImage/")
+            for font in font_manager.get_font_names():
+                print(f"    │   ├── {font}/")
+                print(f"    │   │   └── [character images]")
+            print(f"    └── TargetImage/")
+            for font in font_manager.get_font_names():
+                print(f"        ├── {font}/")
+                print(f"        │   └── {style_name}/")
+                print(f"        │       └── [generated images]")
+            print("="*60)
+            
+        else:
+            # Single character mode
+            out_image = sampling(args=args, pipe=pipe)
+    else:
+        # Original single-image mode
+        out_image = sampling(args=args, pipe=pipe)
 
 
-if __name__ == "__main__":
+if __name__=="__main__":
     main()
+
+
+"""
+USAGE EXAMPLES:
+
+1. Single Character (Original Mode):
+python sample_optimized_safe.py \
+    --ckpt_dir="ckpt/" \
+    --style_image_path="data_examples/sampling/example_style.jpg" \
+    --save_image \
+    --character_input \
+    --content_character="隆" \
+    --save_image_dir="outputs/" \
+    --device="cuda:0" \
+    --algorithm_type="dpmsolver++" \
+    --guidance_type="classifier-free" \
+    --guidance_scale=7.5 \
+    --num_inference_steps=20 \
+    --method="multistep" \
+    --fp16 \
+    --channels_last
+
+2. Multiple Characters from Comma-Separated List:
+python sample_optimized_safe.py \
+    --ckpt_dir="ckpt/" \
+    --style_image_path="data_examples/sampling/example_style.jpg" \
+    --save_image \
+    --character_input \
+    --content_character="漢,字,書,法,藝,術" \
+    --save_image_dir="outputs/" \
+    --device="cuda:0" \
+    --batch_size=4 \
+    --fp16 \
+    --channels_last
+
+3. Multiple Characters from Text File:
+# Create characters.txt:
+# 漢
+# 字
+# 書
+# 法
+# 藝
+# 術
+
+python sample_optimized_safe.py \
+    --ckpt_dir="ckpt/" \
+    --style_image_path="data_examples/sampling/example_style.jpg" \
+    --save_image \
+    --character_input \
+    --characters_file="characters.txt" \
+    --save_image_dir="outputs/" \
+    --device="cuda:0" \
+    --batch_size=4 \
+    --fp16 \
+    --channels_last
+
+4. Multiple Fonts from Directory:
+python sample_optimized_safe.py \
+    --ckpt_dir="ckpt/" \
+    --ttf_path="ttf/" \
+    --style_image_path="data_examples/sampling/example_style.jpg" \
+    --save_image \
+    --character_input \
+    --content_character="漢,字,書" \
+    --save_image_dir="outputs/" \
+    --device="cuda:0" \
+    --batch_size=4 \
+    --fp16 \
+    --channels_last
+
+5. Multiple Fonts + Characters from File:
+python sample_optimized_safe.py \
+    --ckpt_dir="ckpt/" \
+    --ttf_path="ttf/" \
+    --style_image_path="style.jpg" \
+    --save_image \
+    --character_input \
+    --characters_file="characters.txt" \
+    --save_image_dir="outputs/" \
+    --batch_size=8 \
+    --num_inference_steps=15 \
+    --fp16 \
+    --channels_last
+
+Output Structure:
+outputs/
+├── ContentImage/
+│   ├── FontName1/
+│   │   ├── 漢.png
+│   │   ├── 字.png
+│   │   └── ...
+│   ├── FontName2/
+│   │   └── ...
+│   └── ...
+└── TargetImage/
+    ├── FontName1/
+    │   └── style_name/
+    │       ├── style_name+漢.png
+    │       ├── style_name+字.png
+    │       └── ...
+    ├── FontName2/
+    │   └── ...
+    └── ...
+"""
