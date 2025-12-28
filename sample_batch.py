@@ -20,6 +20,7 @@ from PIL import Image
 import torchvision.transforms as transforms
 from argparse import Namespace, ArgumentParser
 
+from .src.dpm_solver.pipeline_dpm_solver import FontDiffuserDPMPipeline
 # Import evaluation metrics
 try:
     import lpips
@@ -475,7 +476,7 @@ def generate_content_images(
     return char_paths
 
 def sampling_batch_optimized(args: Namespace, 
-                             pipe: Any, 
+                             pipe: FontDiffuserDPMPipeline, 
                              characters: List[str], 
                              style_image_path: str, 
                              font_manager: FontManager,
@@ -562,7 +563,7 @@ def sampling_batch_optimized(args: Namespace,
         return None, None, None
 
 
-def batch_generate_images(pipe: Any, 
+def batch_generate_images(pipe: FontDiffuserDPMPipeline, 
                           characters: List[str], 
                           style_paths: List[str],
                           output_dir: str, 
@@ -574,7 +575,6 @@ def batch_generate_images(pipe: Any,
     Generate images in batches for all fonts and styles with checkpoint support
     Output: data_examples/train/TargetImage.png/styleX/styleX+charY.png
     """
-    
     # Initialize or resume results
     if resume_results:
         results: Dict[str, Any] = resume_results
@@ -593,13 +593,12 @@ def batch_generate_images(pipe: Any,
             'total_styles': len(style_paths)
         }
         processed_styles: Set[str] = set()
-    
+
     # Create TargetImage.png directory
     target_base_dir: str = os.path.join(output_dir, 'TargetImage.png')
     os.makedirs(target_base_dir, exist_ok=True)
-    
+
     font_names: List[str] = font_manager.get_font_names()
-    
     print(f"\n{'='*60}")
     print(f"BATCH GENERATION")
     print('='*60)
@@ -612,92 +611,99 @@ def batch_generate_images(pipe: Any,
     print(f"Save interval: {args.save_interval if args.save_interval > 0 else 'end only'}")
     print(f"Output directory: {output_dir}")
     print('='*60)
-    
-    # Use first font for generation
-    font_name: str = font_names[0]
-    print(f"\nUsing font: {font_name}")
-    
-    available_chars: List[str] = font_manager.get_available_chars_for_font(font_name, characters)
-    print(f"Available characters: {len(available_chars)}/{len(characters)}")
-    
+
+    # Map each character to its first supporting font
+    char_to_font: Dict[str, str] = {}
+    for char in characters:
+        for font_name in font_names:
+            if font_manager.is_char_in_font(font_name, char):
+                char_to_font[char] = font_name
+                break
+
     # Create character index mapping
     char_to_idx: Dict[str, int] = {char: idx for idx, char in enumerate(characters)}
-    
+
     # Main generation loop with progress bar
     style_iterator = tqdm(enumerate(style_paths), total=len(style_paths), 
                          desc="🎨 Generating styles", ncols=100)
-    
+
     for style_idx, style_path in style_iterator:
         style_name: str = f"style{style_idx}"
-        
+
         # Skip if already processed
         if style_name in processed_styles:
             style_iterator.set_postfix_str(f"⏭ Skipping {style_name} (already done)")
             continue
-        
+
         style_dir: str = os.path.join(target_base_dir, style_name)
         os.makedirs(style_dir, exist_ok=True)
-        
+
         style_iterator.set_postfix_str(f"Processing {style_name}")
-        
+
+        # Group characters by font for this style
+        font_to_chars: Dict[str, List[str]] = {}
+        for char in characters:
+            font_name = char_to_font.get(char)
+            if font_name:
+                font_to_chars.setdefault(font_name, []).append(char)
+
         try:
-            images, valid_chars, batch_time = sampling_batch_optimized(
-                args, pipe, characters, style_path, font_manager, font_name
-            )
-            
-            if images is None:
-                tqdm.write(f"  ⚠ {style_name}: No images generated")
-                continue
-            
-            tqdm.write(f"  ✓ {style_name}: {len(images)} images in {batch_time:.2f}s "
-                      f"({batch_time/len(images):.3f}s/img)")
-            
-            # Save generated images
-            for char, img in zip(valid_chars, images):
-                try:
-                    char_idx: int = char_to_idx.get(char, 0)
-                    img_name: str = f"{style_name}+char{char_idx}.png"
-                    img_path: str = os.path.join(style_dir, img_name)
-                    evaluator.save_image(img, img_path)
-                    
-                    # Store generation info
-                    results['generations'].append({
-                        'character': char,
-                        'char_index': char_idx,
-                        'font': font_name,
-                        'style': style_name,
-                        'style_path': style_path,
-                        'output_path': img_path
-                    })
-                except Exception as e:
-                    tqdm.write(f"    ✗ Error saving {char}: {e}")
-            
-            # Store timing
-            results['metrics']['inference_times'].append({
-                'style': style_name,
-                'total_time': batch_time,
-                'num_images': len(images),
-                'time_per_image': batch_time / len(images) if images else 0
-            })
-            
+            for font_name, chars_for_font in font_to_chars.items():
+                images, valid_chars, batch_time = sampling_batch_optimized(
+                    args, pipe, chars_for_font, style_path, font_manager, font_name
+                )
+
+                if images is None:
+                    tqdm.write(f"  ⚠ {style_name} ({font_name}): No images generated")
+                    continue
+
+                tqdm.write(f"  ✓ {style_name} ({font_name}): {len(images)} images in {batch_time:.2f}s "
+                          f"({batch_time/len(images):.3f}s/img)")
+
+                # Save generated images
+                for char, img in zip(valid_chars, images):
+                    try:
+                        char_idx: int = char_to_idx.get(char, 0)
+                        img_name: str = f"{style_name}+char{char_idx}.png"
+                        img_path: str = os.path.join(style_dir, img_name)
+                        evaluator.save_image(img, img_path)
+
+                        # Store generation info
+                        results['generations'].append({
+                            'character': char,
+                            'char_index': char_idx,
+                            'font': font_name,
+                            'style': style_name,
+                            'style_path': style_path,
+                            'output_path': img_path
+                        })
+                    except Exception as e:
+                        tqdm.write(f"    ✗ Error saving {char}: {e}")
+
+                # Store timing
+                results['metrics']['inference_times'].append({
+                    'style': style_name,
+                    'font': font_name,
+                    'total_time': batch_time,
+                    'num_images': len(images),
+                    'time_per_image': batch_time / len(images) if images else 0
+                })
+
             # Periodic checkpoint saving
             if args.save_interval > 0 and (style_idx + 1) % args.save_interval == 0:
                 save_checkpoint(results, output_dir)
-            
+
         except Exception as e:
             tqdm.write(f"  ✗ {style_name}: Error - {e}")
             import traceback
             traceback.print_exc()
             continue
-    
+
     print("\n" + "="*60)
     print(f"✓ Generation complete! Total images: {len(results['generations'])}")
     print("="*60)
-    
+
     return results
-
-
-# ...existing code...
 
 def evaluate_results(
     results: Dict[str, Any],
@@ -920,7 +926,7 @@ def main() -> None:
 
         # Load pipeline
         print("\nLoading FontDiffuser pipeline...")
-        pipe: Any = load_fontdiffuser_pipeline(pipeline_args)
+        pipe: FontDiffuserDPMPipeline = load_fontdiffuser_pipeline(pipeline_args)
 
         # Initialize evaluator
         evaluator: QualityEvaluator = QualityEvaluator(device=args.device)
