@@ -275,16 +275,24 @@ def parse_args():
 
 
 def load_characters(characters_arg: str) -> List[str]:
-    """Load characters from comma-separated string or file (one char per line in file)."""
     chars = []
     if os.path.isfile(characters_arg):
         with open(characters_arg, 'r', encoding='utf-8') as f:
-            for line in f:
+            for i, line in enumerate(f, 1):
                 char = line.strip()
-                if char:
-                    chars.append(char)
+                if not char:
+                    continue
+                if len(char) != 1:
+                    print(f"Warning: Skipping line {i}: expected 1 char, got {len(char)}: '{char}'")
+                    continue
+                chars.append(char)
     else:
-        chars = [c.strip() for c in characters_arg.split(',') if c.strip()]
+        for c in [x.strip() for x in characters_arg.split(',') if x.strip()]:
+            if len(c) != 1:
+                raise ValueError(f"Invalid character in argument: '{c}' (must be single char)")
+            chars.append(c)
+    
+    print(f"Successfully loaded {len(chars)} single characters.")
     return chars
 
 def load_style_images(style_images_arg: str) -> List[str]:
