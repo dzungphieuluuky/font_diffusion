@@ -275,23 +275,16 @@ def parse_args():
 
 
 def load_characters(characters_arg: str) -> List[str]:
-    """Load characters from comma-separated string or file"""
+    """Load characters from comma-separated string or file (one char per line in file)."""
+    chars = []
     if os.path.isfile(characters_arg):
         with open(characters_arg, 'r', encoding='utf-8') as f:
-            # Split each line into individual characters
-            chars = []
             for line in f:
-                line = line.strip()
-                if line:
-                    # If line contains comma-separated chars, split them
-                    if ',' in line:
-                        chars.extend([c.strip() for c in line.split(',') if c.strip()])
-                    else:
-                        # Otherwise treat each character separately
-                        chars.extend([c for c in line if c.strip()])
+                char = line.strip()
+                if char:
+                    chars.append(char)
     else:
-        chars = [c.strip() for c in characters_arg.split(',')]
-    
+        chars = [c.strip() for c in characters_arg.split(',') if c.strip()]
     return chars
 
 def load_style_images(style_images_arg: str) -> List[str]:
