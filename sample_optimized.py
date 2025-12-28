@@ -188,7 +188,6 @@ def parse_characters(content_character: str) -> List[str]:
     return chars
 
 
-@lru_cache(maxsize=2)
 def get_content_transform(content_image_size: tuple):
     """Cached content transform"""
     return transforms.Compose([
@@ -199,7 +198,6 @@ def get_content_transform(content_image_size: tuple):
     ])
 
 
-@lru_cache(maxsize=2)
 def get_style_transform(style_image_size: tuple):
     """Cached style transform"""
     return transforms.Compose([
