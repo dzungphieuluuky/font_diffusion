@@ -177,7 +177,6 @@ def image_process_batch_optimized(args, content_characters: List[str],
     return content_batch, style_batch, content_images_pil, valid_chars
 
 
-@lru_cache(maxsize=2)
 def get_content_transform(args):
     """Cached content transform"""
     return transforms.Compose([
@@ -188,7 +187,6 @@ def get_content_transform(args):
     ])
 
 
-@lru_cache(maxsize=2)
 def get_style_transform(args):
     """Cached style transform"""
     return transforms.Compose([
