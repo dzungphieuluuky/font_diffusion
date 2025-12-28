@@ -578,8 +578,11 @@ def batch_generate_images(pipe: FontDiffuserDPMPipeline,
     # Initialize or resume results
     if resume_results:
         results: Dict[str, Any] = resume_results
-        processed_styles: Set[str] = set(g['style'] for g in results['generations'])
-        print(f"📥 Resuming from checkpoint: {len(processed_styles)} styles already processed")
+        # Build a set of processed (style, character) pairs
+        processed_pairs: Set[Tuple[str, str]] = set(
+            (g['style'], g['character']) for g in results['generations']
+        )
+        print(f"📥 Resuming from checkpoint: {len(processed_pairs)} style-character pairs already processed")
     else:
         results: Dict[str, Any] = {
             'generations': [],
@@ -592,7 +595,7 @@ def batch_generate_images(pipe: FontDiffuserDPMPipeline,
             'total_chars': len(characters),
             'total_styles': len(style_paths)
         }
-        processed_styles: Set[str] = set()
+        processed_pairs: Set[Tuple[str, str]] = set()
 
     # Create TargetImage.png directory
     target_base_dir: str = os.path.join(output_dir, 'TargetImage.png')
@@ -630,19 +633,16 @@ def batch_generate_images(pipe: FontDiffuserDPMPipeline,
     for style_idx, style_path in style_iterator:
         style_name: str = f"style{style_idx}"
 
-        # Skip if already processed
-        if style_name in processed_styles:
-            style_iterator.set_postfix_str(f"⏭ Skipping {style_name} (already done)")
-            continue
-
         style_dir: str = os.path.join(target_base_dir, style_name)
         os.makedirs(style_dir, exist_ok=True)
 
         style_iterator.set_postfix_str(f"Processing {style_name}")
 
-        # Group characters by font for this style
+        # Group characters by font for this style, but only those not already processed
         font_to_chars: Dict[str, List[str]] = {}
         for char in characters:
+            if (style_name, char) in processed_pairs:
+                continue  # Skip already processed pair
             font_name = char_to_font.get(char)
             if font_name:
                 font_to_chars.setdefault(font_name, []).append(char)
@@ -677,6 +677,8 @@ def batch_generate_images(pipe: FontDiffuserDPMPipeline,
                             'style_path': style_path,
                             'output_path': img_path
                         })
+                        # Mark this pair as processed
+                        processed_pairs.add((style_name, char))
                     except Exception as e:
                         tqdm.write(f"    ✗ Error saving {char}: {e}")
 
