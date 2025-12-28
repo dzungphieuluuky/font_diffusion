@@ -878,10 +878,10 @@ def main():
     os.makedirs(args.output_dir, exist_ok=True)
     
     # Generate content images for all fonts
-    char_paths = generate_content_images(
-        characters, font_manager, args.output_dir, args
-    )
-    print(f"DEBUG: Generated content image paths for fonts.")
+    # char_paths = generate_content_images(
+    #     characters, font_manager, args.output_dir, args
+    # )
+    # print(f"DEBUG: Generated content image paths for fonts.")
     
     # Create args namespace for pipeline
     pipeline_args = create_args_namespace(args)
