@@ -45,9 +45,7 @@ def arg_parse():
                         help="If in demo mode, the controlnet can be added.")
     parser.add_argument("--character_input", action="store_true")
     parser.add_argument("--content_character", type=str, default=None,
-                        help="Single character, comma-separated list, or path to txt file")
-    parser.add_argument("--characters_file", type=str, default=None,
-                        help="Path to text file with one character per line")
+                        help="Single character or comma-separated list")
     parser.add_argument("--content_image_path", type=str, default=None)
     parser.add_argument("--style_image_path", type=str, default=None)
     parser.add_argument("--save_image", action="store_true")
@@ -167,57 +165,25 @@ class FontManager:
         ]
 
 
-def parse_characters(content_character: str = None, characters_file: str = None) -> List[str]:
+def parse_characters(content_character: str) -> List[str]:
     """
-    Parse character input from multiple sources
+    Parse character input - supports single char or comma-separated list
     
     Args:
-        content_character: Single character, comma-separated list, or path to txt file
-        characters_file: Path to text file with one character per line
+        content_character: Single character or comma-separated list
     
     Returns:
         List of individual characters
     """
-    chars = []
+    if not content_character:
+        return []
     
-    # Priority 1: characters_file argument
-    if characters_file and os.path.isfile(characters_file):
-        print(f"Loading characters from file: {characters_file}")
-        with open(characters_file, 'r', encoding='utf-8') as f:
-            for line in f:
-                line = line.strip()
-                if line and not line.startswith('#'):  # Skip empty lines and comments
-                    # Each line should be a single character
-                    if len(line) == 1:
-                        chars.append(line)
-                    else:
-                        # If line has multiple chars, treat each as separate
-                        chars.extend(list(line))
-        print(f"  Loaded {len(chars)} characters")
-        return chars
-    
-    # Priority 2: content_character argument
-    if content_character:
-        # Check if it's a file path
-        if os.path.isfile(content_character):
-            print(f"Loading characters from file: {content_character}")
-            with open(content_character, 'r', encoding='utf-8') as f:
-                for line in f:
-                    line = line.strip()
-                    if line and not line.startswith('#'):
-                        if len(line) == 1:
-                            chars.append(line)
-                        else:
-                            chars.extend(list(line))
-            print(f"  Loaded {len(chars)} characters")
-            return chars
-        
-        # Check if comma-separated
-        if ',' in content_character:
-            chars = [c.strip() for c in content_character.split(',') if c.strip()]
-        else:
-            # Single character
-            chars = [content_character.strip()] if len(content_character.strip()) == 1 else list(content_character.strip())
+    # Check if comma-separated
+    if ',' in content_character:
+        chars = [c.strip() for c in content_character.split(',') if c.strip()]
+    else:
+        # Single character or string of characters
+        chars = [content_character.strip()] if len(content_character.strip()) == 1 else list(content_character.strip())
     
     return chars
 
@@ -419,20 +385,9 @@ def load_fontdiffuser_pipeline(args):
 
 
 def sampling_batch(args, pipe, characters: List[str], font_manager: FontManager,
-                  font_name: str, style_image_path: str, style_name: str = "style0",
-                  save_content_images: bool = True) -> Tuple[List, List, float]:
+                  font_name: str, style_image_path: str) -> Tuple[List, List, float]:
     """
     Batch sampling for multiple characters with single font and style
-    
-    Args:
-        args: Arguments
-        pipe: Pipeline
-        characters: List of characters
-        font_manager: FontManager instance
-        font_name: Font name
-        style_image_path: Path to style image
-        style_name: Name of style (e.g., "style0")
-        save_content_images: Whether to save content character images
     
     Returns:
         Tuple of (images, valid_chars, inference_time)
@@ -449,14 +404,6 @@ def sampling_batch(args, pipe, characters: List[str], font_manager: FontManager,
     if args.seed:
         set_seed(seed=args.seed)
     
-    # Save content images if requested
-    if save_content_images and args.save_image:
-        content_dir = os.path.join(args.save_image_dir, "ContentImage", font_name)
-        os.makedirs(content_dir, exist_ok=True)
-        
-        for char, pil_img in zip(valid_chars, content_pils):
-            pil_img.save(os.path.join(content_dir, f"{char}.png"))
-    
     with torch.no_grad():
         dtype = torch.float16 if args.fp16 else torch.float32
         content_batch = content_batch.to(args.device, dtype=dtype)
@@ -467,7 +414,7 @@ def sampling_batch(args, pipe, characters: List[str], font_manager: FontManager,
             content_batch = content_batch.to(memory_format=torch.channels_last)
             style_batch = style_batch.to(memory_format=torch.channels_last)
         
-        print(f"  Sampling {len(valid_chars)} characters with DPM-Solver++ ...")
+        print(f"Sampling {len(valid_chars)} characters with DPM-Solver++ ...")
         start = time.time()
         
         # Process in batches
@@ -499,16 +446,7 @@ def sampling_batch(args, pipe, characters: List[str], font_manager: FontManager,
         end = time.time()
         inference_time = end - start
         
-        # Save generated images
-        if args.save_image:
-            target_dir = os.path.join(args.save_image_dir, "TargetImage", font_name, style_name)
-            os.makedirs(target_dir, exist_ok=True)
-            
-            for char, img in zip(valid_chars, all_images):
-                img_name = f"{style_name}+{char}.png"
-                save_single_image(save_dir=target_dir, image=img, image_name=img_name)
-        
-        print(f"  ✓ Generated {len(all_images)} images in {inference_time:.2f}s ({inference_time/len(all_images):.3f}s/img)")
+        print(f"✓ Generated {len(all_images)} images in {inference_time:.2f}s ({inference_time/len(all_images):.3f}s/img)")
         
         return all_images, valid_chars, inference_time
 
@@ -605,17 +543,15 @@ def main():
     # Load pipeline
     pipe = load_fontdiffuser_pipeline(args=args)
     
-    # Parse characters from file or argument
-    characters = parse_characters(args.content_character, args.characters_file)
-    
     # Check if multi-character or multi-font mode
-    if args.character_input and characters:
+    if args.character_input and args.content_character:
+        characters = parse_characters(args.content_character)
         
         if len(characters) > 1 or os.path.isdir(args.ttf_path):
             # Multi-character or multi-font mode
             print(f"\n{'='*60}")
             print("BATCH MODE ACTIVATED")
-            print(f"Characters: {len(characters)} - {characters[:10]}{'...' if len(characters) > 10 else ''}")
+            print(f"Characters: {len(characters)}")
             print('='*60)
             
             # Load font manager
@@ -626,53 +562,43 @@ def main():
                 os.makedirs(args.save_image_dir, exist_ok=True)
                 save_args_to_yaml(args=args, output_file=f"{args.save_image_dir}/sampling_config.yaml")
             
-            # Determine style name from path
-            style_name = os.path.splitext(os.path.basename(args.style_image_path))[0]
-            
             # Process each font
-            total_generated = 0
             for font_idx, font_name in enumerate(font_names):
-                print(f"\n{'='*60}")
-                print(f"[Font {font_idx+1}/{len(font_names)}] {font_name}")
-                print('='*60)
+                print(f"\n[Font {font_idx+1}/{len(font_names)}] {font_name}")
+                print("-" * 60)
                 
                 # Get available characters
                 available = font_manager.get_available_chars_for_font(font_name, characters)
-                print(f"  Available characters: {len(available)}/{len(characters)}")
+                print(f"Available characters: {len(available)}/{len(characters)}")
                 
                 if not available:
-                    print("  ⚠ Skipping font (no characters available)")
+                    print("Skipping font (no characters available)")
                     continue
                 
                 # Sample in batch
                 images, valid_chars, inf_time = sampling_batch(
                     args, pipe, characters, font_manager, 
-                    font_name, args.style_image_path, style_name,
-                    save_content_images=True
+                    font_name, args.style_image_path
                 )
                 
                 if images is None:
                     continue
                 
-                total_generated += len(images)
+                # Save images
+                if args.save_image:
+                    font_dir = os.path.join(args.save_image_dir, font_name)
+                    os.makedirs(font_dir, exist_ok=True)
+                    
+                    for char, img in zip(valid_chars, images):
+                        char_dir = os.path.join(font_dir, char)
+                        os.makedirs(char_dir, exist_ok=True)
+                        save_single_image(save_dir=char_dir, image=img)
+                    
+                    print(f"✓ Saved {len(images)} images to {font_dir}")
             
             print("\n" + "="*60)
             print("✓ BATCH PROCESSING COMPLETE")
             print("="*60)
-            print(f"Total images generated: {total_generated}")
-            print(f"\nOutput structure:")
-            print(f"  {args.save_image_dir}/")
-            print(f"    ├── ContentImage/")
-            for font in font_manager.get_font_names():
-                print(f"    │   ├── {font}/")
-                print(f"    │   │   └── [character images]")
-            print(f"    └── TargetImage/")
-            for font in font_manager.get_font_names():
-                print(f"        ├── {font}/")
-                print(f"        │   └── {style_name}/")
-                print(f"        │       └── [generated images]")
-            print("="*60)
-            
         else:
             # Single character mode
             out_image = sampling(args=args, pipe=pipe)
@@ -705,7 +631,7 @@ python sample_optimized_safe.py \
     --fp16 \
     --channels_last
 
-2. Multiple Characters from Comma-Separated List:
+2. Multiple Characters (Batch Mode):
 python sample_optimized_safe.py \
     --ckpt_dir="ckpt/" \
     --style_image_path="data_examples/sampling/example_style.jpg" \
@@ -718,28 +644,7 @@ python sample_optimized_safe.py \
     --fp16 \
     --channels_last
 
-3. Multiple Characters from Text File:
-# Create characters.txt:
-# 漢
-# 字
-# 書
-# 法
-# 藝
-# 術
-
-python sample_optimized_safe.py \
-    --ckpt_dir="ckpt/" \
-    --style_image_path="data_examples/sampling/example_style.jpg" \
-    --save_image \
-    --character_input \
-    --characters_file="characters.txt" \
-    --save_image_dir="outputs/" \
-    --device="cuda:0" \
-    --batch_size=4 \
-    --fp16 \
-    --channels_last
-
-4. Multiple Fonts from Directory:
+3. Multiple Fonts (Directory Mode):
 python sample_optimized_safe.py \
     --ckpt_dir="ckpt/" \
     --ttf_path="ttf/" \
@@ -753,37 +658,17 @@ python sample_optimized_safe.py \
     --fp16 \
     --channels_last
 
-5. Multiple Fonts + Characters from File:
+4. Single Font + Multiple Characters + Max Speed:
 python sample_optimized_safe.py \
     --ckpt_dir="ckpt/" \
-    --ttf_path="ttf/" \
+    --ttf_path="ttf/MyFont.ttf" \
     --style_image_path="style.jpg" \
     --save_image \
     --character_input \
-    --characters_file="characters.txt" \
+    --content_character="漢,字,書,法,藝,術,文,化,學,習" \
     --save_image_dir="outputs/" \
     --batch_size=8 \
     --num_inference_steps=15 \
     --fp16 \
     --channels_last
-
-Output Structure:
-outputs/
-├── ContentImage/
-│   ├── FontName1/
-│   │   ├── 漢.png
-│   │   ├── 字.png
-│   │   └── ...
-│   ├── FontName2/
-│   │   └── ...
-│   └── ...
-└── TargetImage/
-    ├── FontName1/
-    │   └── style_name/
-    │       ├── style_name+漢.png
-    │       ├── style_name+字.png
-    │       └── ...
-    ├── FontName2/
-    │   └── ...
-    └── ...
 """
