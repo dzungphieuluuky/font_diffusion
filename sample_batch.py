@@ -1,7 +1,7 @@
 """
 Batch sampling and evaluation for FontDiffuser
 Generates images in FontDiffuser standard training format:
-data_examples/train/ContentImage/ + TargetImage.png/styleX/
+data_examples/train/ContentImage/ + TargetImage/styleX/
 """
 
 import os
@@ -240,7 +240,7 @@ def parse_args() -> Namespace:
     parser.add_argument('--style_images', type=str, required=True,
                        help='Comma-separated paths to style images or directory')
     parser.add_argument('--output_dir', type=str, default='data_examples/train',
-                       help='Output directory (will create ContentImage/ and TargetImage.png/ subdirs)')
+                       help='Output directory (will create ContentImage/ and TargetImage/ subdirs)')
     parser.add_argument('--ground_truth_dir', type=str, default=None,
                        help='Directory with ground truth images for evaluation')
     
@@ -573,7 +573,7 @@ def batch_generate_images(pipe: FontDiffuserDPMPipeline,
                           resume_results: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
     Generate images in batches for all fonts and styles with checkpoint support
-    Output: data_examples/train/TargetImage.png/styleX/styleX+charY.png
+    Output: data_examples/train/TargetImage/styleX/styleX+charY.png
     """
     # Initialize or resume results
     if resume_results:
@@ -597,8 +597,8 @@ def batch_generate_images(pipe: FontDiffuserDPMPipeline,
         }
         processed_pairs: Set[Tuple[str, str]] = set()
 
-    # Create TargetImage.png directory
-    target_base_dir: str = os.path.join(output_dir, 'TargetImage.png')
+    # Create TargetImage directory
+    target_base_dir: str = os.path.join(output_dir, 'TargetImage')
     os.makedirs(target_base_dir, exist_ok=True)
 
     font_names: List[str] = font_manager.get_font_names()
@@ -964,7 +964,7 @@ def main() -> None:
         print(f"    │   ├── char0.png")
         print(f"    │   ├── char1.png")
         print(f"    │   └── ...")
-        print(f"    ├── TargetImage.png/")
+        print(f"    ├── TargetImage/")
         print(f"    │   ├── style0/")
         print(f"    │   │   ├── style0+char0.png")
         print(f"    │   │   ├── style0+char1.png")
