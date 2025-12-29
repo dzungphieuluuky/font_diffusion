@@ -20,7 +20,7 @@ from PIL import Image
 import torchvision.transforms as transforms
 from argparse import Namespace, ArgumentParser
 
-from .src.dpm_solver.pipeline_dpm_solver import FontDiffuserDPMPipeline
+from src.dpm_solver.pipeline_dpm_solver import FontDiffuserDPMPipeline
 # Import evaluation metrics
 try:
     import lpips
