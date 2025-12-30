@@ -4,6 +4,7 @@ outputs/
 run_sh/
 ckpt/
 ttf/
+my_dataset/
 *.zip
 *.pdf
 
