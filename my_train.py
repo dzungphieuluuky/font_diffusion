@@ -230,7 +230,7 @@ def main():
     
     val_font_dataset = FontDataset(
         args=args,
-        phase='val',
+        phase='val_unseen_both',
         transforms=[
             val_content_transforms, 
             val_style_transforms, 
