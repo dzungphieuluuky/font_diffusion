@@ -5,6 +5,7 @@ Preserves and uploads original results.json metadata
 
 import os
 import json
+import shutil
 import tempfile
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Tuple
@@ -275,6 +276,11 @@ class FontDiffusionDatasetBuilder:
                     print(f"  ✓ Successfully uploaded results.json!")
                     print(f"    File: https://huggingface.co/datasets/{self.config.repo_id}/blob/main/results.json")
                     
+                    # ✅ Log stats using helper method
+                    metadata = self._load_results_metadata()
+                    if metadata:
+                        self._log_metadata_stats(metadata)
+                    
                 except Exception as e:
                     print(f"  ✗ Error uploading results.json: {e}")
             
@@ -296,31 +302,28 @@ class FontDiffusionDatasetBuilder:
                 except Exception as e:
                     print(f"  ✗ Error uploading results_checkpoint.json: {e}")
             
-            # ✅ Log metadata statistics from results.json
-            if results_path:
-                try:
-                    with open(results_path, 'r', encoding='utf-8') as f:
-                        metadata = json.load(f)
-                    
-                    num_generations = len(metadata.get('generations', []))
-                    num_styles = len(metadata.get('styles', []))
-                    num_chars = len(metadata.get('characters', []))
-                    fonts = metadata.get('fonts', [])
-                    
-                    print(f"\n📊 Metadata Statistics:")
-                    print(f"  Total generations: {num_generations}")
-                    print(f"  Total styles: {num_styles}")
-                    print(f"  Total characters: {num_chars}")
-                    print(f"  Fonts: {', '.join(fonts) if fonts else 'unknown'}")
-                except Exception as e:
-                    print(f"⚠ Could not read metadata statistics: {e}")
-            
         except ImportError:
             print("\n⚠ huggingface_hub not installed - skipping metadata upload")
             print("  Install with: pip install huggingface_hub")
         except Exception as e:
             print(f"\n⚠ Warning: Could not upload metadata: {e}")
             print(f"  You can manually upload files to the Hub repository")
+    
+    def _log_metadata_stats(self, metadata: Dict[str, Any]) -> None:
+        """✅ Helper method to avoid code duplication"""
+        try:
+            num_generations = len(metadata.get('generations', []))
+            num_styles = len(metadata.get('styles', []))
+            num_chars = len(metadata.get('characters', []))
+            fonts = metadata.get('fonts', [])
+            
+            print(f"\n📊 Metadata Statistics:")
+            print(f"  Total generations: {num_generations}")
+            print(f"  Total styles: {num_styles}")
+            print(f"  Total characters: {num_chars}")
+            print(f"  Fonts: {', '.join(fonts) if fonts else 'unknown'}")
+        except Exception as e:
+            print(f"⚠ Could not log metadata stats: {e}")
     
     def save_locally(self, output_path: str) -> None:
         """Save dataset and metadata locally for inspection"""
@@ -329,22 +332,19 @@ class FontDiffusionDatasetBuilder:
         dataset.save_to_disk(output_path)
         print(f"✓ Dataset saved to {output_path}")
         
-        # ✅ Also copy metadata files locally
-        results_path = self._get_results_metadata_path("results.json")  # ✅ Fixed: added argument
-        checkpoint_path = self._get_results_metadata_path("results_checkpoint.json")  # ✅ Fixed: added argument
+        # ✅ Also copy metadata files locally (using shutil from top imports)
+        results_path = self._get_results_metadata_path("results.json")
+        checkpoint_path = self._get_results_metadata_path("results_checkpoint.json")
         
         if results_path:
-            import shutil
             local_results_path = Path(output_path) / "results.json"
-            shutil.copy(results_path, local_results_path)
+            shutil.copy(results_path, local_results_path)  # ✅ No local import needed
             print(f"✓ results.json saved to {local_results_path}")
         
         if checkpoint_path:
-            import shutil
             local_checkpoint_path = Path(output_path) / "results_checkpoint.json"
-            shutil.copy(checkpoint_path, local_checkpoint_path)
+            shutil.copy(checkpoint_path, local_checkpoint_path)  # ✅ No local import needed
             print(f"✓ results_checkpoint.json saved to {local_checkpoint_path}")
-
 
 def create_and_push_dataset(
     data_dir: str,
