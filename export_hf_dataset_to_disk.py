@@ -57,8 +57,7 @@ class DatasetExporter:
             print(f"\nLoading from Hub: {self.config.repo_id}")
             dataset = load_dataset(
                 self.config.repo_id,
-                split=self.config.split,
-                trust_remote_code=True)
+                split=self.config.split)
         elif self.config.local_dataset_path:
             print(f"\nLoading from local path: {self.config.local_dataset_path}")
             dataset = Dataset.load_from_disk(self.config.local_dataset_path)
