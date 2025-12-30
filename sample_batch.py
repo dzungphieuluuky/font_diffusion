@@ -908,14 +908,14 @@ def main() -> None:
         font_manager: FontManager = FontManager(args.ttf_path)
 
         # Print per-font character support summary
-        print("\nFont coverage summary:")
-        total_chars = len(characters)
-        for font_name in font_manager.get_font_names():
-            available_chars = font_manager.get_available_chars_for_font(font_name, characters)
-            print(f"  {font_name}: {len(available_chars)} / {total_chars} characters supported")
-        print()
+        # print("\nFont coverage summary:")
+        # total_chars = len(characters)
+        # for font_name in font_manager.get_font_names():
+        #     available_chars = font_manager.get_available_chars_for_font(font_name, characters)
+        #     print(f"  {font_name}: {len(available_chars)} / {total_chars} characters supported")
+        # print()
 
-        print(f"\n📊 Configuration:")
+        # print(f"\n📊 Configuration:")
 
         print(f"\n📊 Configuration:")
         print(f"  Number of Characters: {len(characters)} (lines {args.start_line}-{args.end_line or 'end'})")
