@@ -52,26 +52,40 @@ class FontDiffusionDatasetBuilder:
         print(f"  Target images: {self.target_dir}")
     
     def _load_results_metadata(self) -> Optional[Dict[str, Any]]:
-        """Load results.json metadata if available"""
+        """
+        Load results.json metadata if available
+        Returns None if file doesn't exist or is corrupted
+        """
         results_path = self.data_dir / "results.json"
         if not results_path.exists():
+            print(f"⚠ results.json not found at {results_path}")
             return None
         
         try:
             with open(results_path, 'r', encoding='utf-8') as f:
-                return json.load(f)
+                metadata = json.load(f)
+            print(f"✓ Loaded results.json")
+            return metadata
         except json.JSONDecodeError as e:
             print(f"\n⚠ Warning: results.json is corrupted ({e})")
             print(f"  Proceeding without metadata...")
-            return None
+            return None  # ✅ Return None instead of raising
         except Exception as e:
             print(f"\n⚠ Warning: Could not load results.json ({e})")
             print(f"  Proceeding without metadata...")
-            return None
+            return None  # ✅ Return None instead of raising
     
-    def _get_results_metadata_path(self) -> Optional[Path]:
-        """Get path to original results.json"""
-        results_path = self.data_dir / "results.json"
+    def _get_results_metadata_path(self, metadata_filename: str) -> Optional[Path]:
+        """
+        Get path to original metadata file if it exists
+        
+        Args:
+            metadata_filename: Name of metadata file (e.g., "results.json" or "results_checkpoint.json")
+        
+        Returns:
+            Path object if file exists, None otherwise
+        """
+        results_path = self.data_dir / metadata_filename
         if results_path.exists():
             return results_path
         return None
@@ -93,7 +107,7 @@ class FontDiffusionDatasetBuilder:
         print("BUILDING DATASET")
         print("="*60)
         
-        # Load metadata
+        # Load metadata (optional)
         metadata = self._load_results_metadata()
         
         dataset_rows: List[Dict[str, Any]] = []
@@ -188,47 +202,6 @@ class FontDiffusionDatasetBuilder:
             'font': [r['font'] for r in dataset_rows],
         }).cast_column('content_image', HFImage()).cast_column('target_image', HFImage())
     
-    def _load_content_images(self) -> List[Dict[str, Any]]:
-        """Load all content images and their metadata"""
-        content_images: List[Dict[str, Any]] = []
-        
-        content_files = sorted(self.content_dir.glob("char*.png"))
-        
-        if not content_files:
-            raise ValueError(f"No content images found in {self.content_dir}")
-        
-        metadata = self._load_results_metadata()
-        
-        for img_path in content_files:
-            try:
-                # Parse filename: char0.png
-                char_idx = int(img_path.stem.replace('char', ''))
-                
-                # Get character from metadata or use placeholder
-                character = '?'
-                
-                if metadata:
-                    for gen_info in metadata.get('generations', []):
-                        if gen_info.get('char_index') == char_idx:
-                            character = gen_info.get('character', '?')
-                            break
-                
-                content_images.append({
-                    'index': char_idx,
-                    'character': character,
-                    'path': str(img_path)
-                })
-            except Exception as e:
-                print(f"⚠ Error processing {img_path}: {e}")
-                continue
-        
-        # Sort by index
-        content_images.sort(key=lambda x: x['index'])
-        
-        print(f"✓ Loaded {len(content_images)} content images")
-        
-        return content_images
-    
     def push_to_hub(self, dataset: Dataset) -> None:
         """Push dataset to Hugging Face Hub"""
         if not self.config.push_to_hub:
@@ -254,7 +227,7 @@ class FontDiffusionDatasetBuilder:
             print(f"\n✓ Successfully pushed dataset to Hub!")
             print(f"  Dataset URL: https://huggingface.co/datasets/{self.config.repo_id}")
             
-            # ✅ Upload original results.json metadata
+            # ✅ Upload original metadata files
             if self.config.upload_metadata:
                 self._upload_metadata_to_hub()
             
@@ -264,13 +237,18 @@ class FontDiffusionDatasetBuilder:
     
     def _upload_metadata_to_hub(self) -> None:
         """
-        Upload original results.json to Hub as a dataset file
+        Upload both results.json and results_checkpoint.json to Hub as dataset files
         Makes metadata accessible when exporting
+        ✅ Handles both files independently with proper existence checks
         """
-        results_path = self._get_results_metadata_path()
+        # ✅ Get paths and check existence FIRST
+        results_path = self._get_results_metadata_path("results.json")
+        checkpoint_path = self._get_results_metadata_path("results_checkpoint.json")
         
-        if not results_path:
-            print("\n⚠ No results.json found - skipping metadata upload")
+        # If neither exists, skip
+        if not results_path and not checkpoint_path:
+            print("\n⚠ No metadata files (results.json or results_checkpoint.json) found")
+            print("  Skipping metadata upload")
             return
         
         try:
@@ -282,41 +260,67 @@ class FontDiffusionDatasetBuilder:
             
             api = HfApi()
             
-            print(f"Uploading results.json to {self.config.repo_id}...")
+            # ✅ Upload results.json if it exists
+            if results_path:
+                try:
+                    print(f"\nUploading results.json to {self.config.repo_id}...")
+                    api.upload_file(
+                        path_or_fileobj=str(results_path),
+                        path_in_repo="results.json",
+                        repo_id=self.config.repo_id,
+                        repo_type="dataset",
+                        token=self.config.token,
+                        commit_message=f"Upload original results.json for split '{self.config.split}'"
+                    )
+                    print(f"  ✓ Successfully uploaded results.json!")
+                    print(f"    File: https://huggingface.co/datasets/{self.config.repo_id}/blob/main/results.json")
+                    
+                except Exception as e:
+                    print(f"  ✗ Error uploading results.json: {e}")
             
-            # Upload results.json as a dataset file
-            api.upload_file(
-                path_or_fileobj=str(results_path),
-                path_in_repo="results.json",
-                repo_id=self.config.repo_id,
-                repo_type="dataset",
-                token=self.config.token,
-                commit_message=f"Upload original results.json for split '{self.config.split}'"
-            )
+            # ✅ Upload results_checkpoint.json if it exists
+            if checkpoint_path:
+                try:
+                    print(f"\nUploading results_checkpoint.json to {self.config.repo_id}...")
+                    api.upload_file(
+                        path_or_fileobj=str(checkpoint_path),
+                        path_in_repo="results_checkpoint.json",
+                        repo_id=self.config.repo_id,
+                        repo_type="dataset",
+                        token=self.config.token,
+                        commit_message=f"Upload original results_checkpoint.json for split '{self.config.split}'"
+                    )
+                    print(f"  ✓ Successfully uploaded results_checkpoint.json!")
+                    print(f"    File: https://huggingface.co/datasets/{self.config.repo_id}/blob/main/results_checkpoint.json")
+                    
+                except Exception as e:
+                    print(f"  ✗ Error uploading results_checkpoint.json: {e}")
             
-            print(f"\n✓ Successfully uploaded results.json!")
-            print(f"  File: https://huggingface.co/datasets/{self.config.repo_id}/blob/main/results.json")
-            
-            # Also log metadata statistics
-            with open(results_path, 'r', encoding='utf-8') as f:
-                metadata = json.load(f)
-            
-            num_generations = len(metadata.get('generations', []))
-            num_styles = len(metadata.get('styles', []))
-            num_chars = len(metadata.get('characters', []))
-            
-            print(f"\nMetadata Statistics:")
-            print(f"  Total generations: {num_generations}")
-            print(f"  Total styles: {num_styles}")
-            print(f"  Total characters: {num_chars}")
-            print(f"  Fonts: {', '.join(metadata.get('fonts', ['unknown']))}")
+            # ✅ Log metadata statistics from results.json
+            if results_path:
+                try:
+                    with open(results_path, 'r', encoding='utf-8') as f:
+                        metadata = json.load(f)
+                    
+                    num_generations = len(metadata.get('generations', []))
+                    num_styles = len(metadata.get('styles', []))
+                    num_chars = len(metadata.get('characters', []))
+                    fonts = metadata.get('fonts', [])
+                    
+                    print(f"\n📊 Metadata Statistics:")
+                    print(f"  Total generations: {num_generations}")
+                    print(f"  Total styles: {num_styles}")
+                    print(f"  Total characters: {num_chars}")
+                    print(f"  Fonts: {', '.join(fonts) if fonts else 'unknown'}")
+                except Exception as e:
+                    print(f"⚠ Could not read metadata statistics: {e}")
             
         except ImportError:
             print("\n⚠ huggingface_hub not installed - skipping metadata upload")
             print("  Install with: pip install huggingface_hub")
         except Exception as e:
             print(f"\n⚠ Warning: Could not upload metadata: {e}")
-            print(f"  You can manually upload results.json to the Hub repository")
+            print(f"  You can manually upload files to the Hub repository")
     
     def save_locally(self, output_path: str) -> None:
         """Save dataset and metadata locally for inspection"""
@@ -325,13 +329,21 @@ class FontDiffusionDatasetBuilder:
         dataset.save_to_disk(output_path)
         print(f"✓ Dataset saved to {output_path}")
         
-        # ✅ Also copy results.json locally
-        results_path = self._get_results_metadata_path()
+        # ✅ Also copy metadata files locally
+        results_path = self._get_results_metadata_path("results.json")  # ✅ Fixed: added argument
+        checkpoint_path = self._get_results_metadata_path("results_checkpoint.json")  # ✅ Fixed: added argument
+        
         if results_path:
             import shutil
             local_results_path = Path(output_path) / "results.json"
             shutil.copy(results_path, local_results_path)
-            print(f"✓ Metadata saved to {local_results_path}")
+            print(f"✓ results.json saved to {local_results_path}")
+        
+        if checkpoint_path:
+            import shutil
+            local_checkpoint_path = Path(output_path) / "results_checkpoint.json"
+            shutil.copy(checkpoint_path, local_checkpoint_path)
+            print(f"✓ results_checkpoint.json saved to {local_checkpoint_path}")
 
 
 def create_and_push_dataset(
@@ -342,7 +354,7 @@ def create_and_push_dataset(
     private: bool = False,
     token: Optional[str] = None,
     local_save_path: Optional[str] = None,
-    upload_metadata: bool = True  # ✅ New parameter
+    upload_metadata: bool = True
 ) -> Dataset:
     """
     Create FontDiffusion dataset and optionally push to Hub
@@ -355,7 +367,7 @@ def create_and_push_dataset(
         private: Whether repo should be private
         token: HF token (if None, uses HUGGINGFACE_TOKEN env var)
         local_save_path: Path to save dataset locally
-        upload_metadata: Whether to upload original results.json  # ✅
+        upload_metadata: Whether to upload original results.json and results_checkpoint.json
     
     Returns:
         Dataset object
@@ -368,7 +380,7 @@ def create_and_push_dataset(
         push_to_hub=push_to_hub,
         private=private,
         token=token,
-        upload_metadata=upload_metadata  # ✅
+        upload_metadata=upload_metadata
     )
     
     builder = FontDiffusionDatasetBuilder(config)
@@ -385,7 +397,6 @@ def create_and_push_dataset(
         builder.push_to_hub(dataset)
     
     return dataset
-
 
 if __name__ == "__main__":
     import argparse

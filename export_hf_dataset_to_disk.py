@@ -1,9 +1,9 @@
 """
 Export Hugging Face dataset back to original FontDiffusion directory structure
-Preserves original results.json from pipeline generation
+Preserves original results.json AND results_checkpoint.json from pipeline generation
 """
 from pathlib import Path
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Tuple
 from dataclasses import dataclass
 import json
 import os
@@ -22,23 +22,23 @@ class ExportConfig:
     split: str = "train"
     create_metadata: bool = True
     token: Optional[str] = None
-    preserve_original_metadata: bool = True  # ✅ New flag
+    preserve_original_metadata: bool = True
 
 
 class DatasetExporter:
-    """Export Hugging Face dataset to disk, preserving original metadata"""
+    """Export Hugging Face dataset to disk, preserving original metadata files"""
     
     def __init__(self, config: ExportConfig):
         self.config = config
         self.output_dir = Path(config.output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
     
-    def export(self) -> Dict[str, Any]:
+    def export(self) -> Tuple[Dict[str, Any], Optional[Dict[str, Any]]]:
         """
         Export dataset from Hub to disk
         
         Returns:
-            Metadata dict (original or reconstructed)
+            Tuple of (results_metadata, checkpoint_metadata)
         """
         print("\n" + "="*60)
         print("EXPORTING DATASET TO DISK")
@@ -63,61 +63,112 @@ class DatasetExporter:
         content_dir.mkdir(parents=True, exist_ok=True)
         target_base_dir.mkdir(parents=True, exist_ok=True)
         
-        # Check if original results.json exists in dataset
-        original_metadata = self._try_load_original_metadata()
+        # Try to load both original metadata files
+        original_results, original_checkpoint = self._try_load_original_metadata()
         
-        if original_metadata and self.config.preserve_original_metadata:
-            print("\n✅ Found original results.json metadata - preserving it")
-            return self._export_with_original_metadata(dataset, original_metadata)
+        if (original_results or original_checkpoint) and self.config.preserve_original_metadata:
+            print("\n✅ Found original metadata - preserving it")
+            return self._export_with_original_metadata(
+                dataset, original_results, original_checkpoint
+            )
         else:
             print("\n⚠ Original metadata not found - reconstructing from dataset")
-            return self._export_with_reconstructed_metadata(dataset)
+            return self._export_with_reconstructed_metadata(dataset), None
     
-    def _try_load_original_metadata(self) -> Optional[Dict[str, Any]]:
+    def _try_load_original_metadata(self) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
         """
-        Try to load original results.json from various sources
-        1. From dataset card / extra files
-        2. From Hub repository files
+        Try to load both results.json and results_checkpoint.json from various sources
+        
+        Returns:
+            Tuple of (results_data, checkpoint_data)
         """
+        results_data: Optional[Dict[str, Any]] = None
+        checkpoint_data: Optional[Dict[str, Any]] = None
+        
         try:
-            # Method 1: Check if results.json is in Hub repo files
+            # Method 1: Try to download from Hub repository
             if self.config.repo_id:
                 from huggingface_hub import hf_hub_download
                 
+                print("\n📥 Attempting to load metadata from Hub...")
+                
+                # Try results.json
                 try:
-                    metadata_path = hf_hub_download(
+                    results_path = hf_hub_download(
                         repo_id=self.config.repo_id,
                         filename="results.json",
                         repo_type="dataset",
                         token=self.config.token
                     )
                     
-                    with open(metadata_path, 'r', encoding='utf-8') as f:
-                        metadata = json.load(f)
+                    with open(results_path, 'r', encoding='utf-8') as f:
+                        results_data = json.load(f)
                     
-                    print(f"✓ Loaded original results.json from Hub")
-                    return metadata
+                    print(f"  ✓ Loaded results.json from Hub")
+                    
                 except Exception as e:
-                    print(f"  (results.json not in Hub: {e})")
+                    print(f"  ⚠ results.json not found on Hub: {type(e).__name__}")
+                
+                # Try results_checkpoint.json
+                try:
+                    checkpoint_path = hf_hub_download(
+                        repo_id=self.config.repo_id,
+                        filename="results_checkpoint.json",
+                        repo_type="dataset",
+                        token=self.config.token
+                    )
+                    
+                    with open(checkpoint_path, 'r', encoding='utf-8') as f:
+                        checkpoint_data = json.load(f)
+                    
+                    print(f"  ✓ Loaded results_checkpoint.json from Hub")
+                    
+                except Exception as e:
+                    print(f"  ⚠ results_checkpoint.json not found on Hub: {type(e).__name__}")
+                
+                # If we found at least one file from Hub, return it
+                if results_data or checkpoint_data:
+                    return results_data, checkpoint_data
             
-            # Method 2: Check local cache
-            local_cache_path = self.output_dir.parent / "results.json"
-            if local_cache_path.exists():
-                with open(local_cache_path, 'r', encoding='utf-8') as f:
-                    metadata = json.load(f)
-                print(f"✓ Loaded original results.json from local cache")
-                return metadata
+            # Method 2: Try local cache/parent directory
+            print("\n📁 Attempting to load metadata from local cache...")
             
-            return None
+            # Try results.json locally
+            local_results_path = self.output_dir.parent / "results.json"
+            if local_results_path.exists():
+                try:
+                    with open(local_results_path, 'r', encoding='utf-8') as f:
+                        results_data = json.load(f)
+                    print(f"  ✓ Loaded results.json from local cache")
+                except Exception as e:
+                    print(f"  ⚠ Error loading local results.json: {e}")
+            
+            # Try results_checkpoint.json locally
+            local_checkpoint_path = self.output_dir.parent / "results_checkpoint.json"
+            if local_checkpoint_path.exists():
+                try:
+                    with open(local_checkpoint_path, 'r', encoding='utf-8') as f:
+                        checkpoint_data = json.load(f)
+                    print(f"  ✓ Loaded results_checkpoint.json from local cache")
+                except Exception as e:
+                    print(f"  ⚠ Error loading local results_checkpoint.json: {e}")
+            
+            if results_data or checkpoint_data:
+                return results_data, checkpoint_data
+            
+            print(f"  ⚠ No metadata files found")
+            return None, None
+            
         except Exception as e:
-            print(f"  Could not load original metadata: {e}")
-            return None
+            print(f"\n⚠ Error loading original metadata: {e}")
+            return None, None
     
     def _export_with_original_metadata(self, 
                                        dataset: Dataset, 
-                                       original_metadata: Dict[str, Any]) -> Dict[str, Any]:
+                                       original_results: Optional[Dict[str, Any]],
+                                       original_checkpoint: Optional[Dict[str, Any]]) -> Tuple[Dict[str, Any], Optional[Dict[str, Any]]]:
         """
-        Export dataset while preserving original results.json structure
+        Export dataset while preserving original results.json and results_checkpoint.json
         Ensures output paths match actual files
         """
         print("\n" + "="*60)
@@ -147,7 +198,6 @@ class DatasetExporter:
         print("\nExporting target images...")
         target_samples_exported = 0
         
-        # Create style directories and track exports
         for sample in tqdm(dataset, desc="🎨 Exporting target images", ncols=80):
             if 'target_image' in sample:
                 char_idx = sample.get('char_index', 0)
@@ -165,17 +215,33 @@ class DatasetExporter:
         
         print(f"✓ Exported {target_samples_exported} target images")
         
-        # ✅ Update original metadata with correct file paths
-        updated_metadata = self._update_metadata_paths(original_metadata)
+        # ✅ Update and save both metadata files
+        print("\nSaving metadata files...")
         
-        # Save updated metadata
-        results_path = self.output_dir / "results.json"
-        with open(results_path, 'w', encoding='utf-8') as f:
-            json.dump(updated_metadata, f, indent=2, ensure_ascii=False)
+        updated_results = None
+        updated_checkpoint = None
         
-        print(f"\n✓ Saved original results.json to {results_path}")
+        # Save results.json
+        if original_results:
+            updated_results = self._update_metadata_paths(original_results)
+            results_path = self.output_dir / "results.json"
+            with open(results_path, 'w', encoding='utf-8') as f:
+                json.dump(updated_results, f, indent=2, ensure_ascii=False)
+            print(f"  ✓ Saved results.json ({len(updated_results.get('generations', []))} generations)")
         
-        return updated_metadata
+        # Save results_checkpoint.json
+        if original_checkpoint:
+            updated_checkpoint = self._update_metadata_paths(original_checkpoint)
+            checkpoint_path = self.output_dir / "results_checkpoint.json"
+            with open(checkpoint_path, 'w', encoding='utf-8') as f:
+                json.dump(updated_checkpoint, f, indent=2, ensure_ascii=False)
+            print(f"  ✓ Saved results_checkpoint.json ({len(updated_checkpoint.get('generations', []))} generations)")
+        
+        # Log metadata statistics
+        if updated_results:
+            self._log_metadata_stats(updated_results)
+        
+        return updated_results or {}, updated_checkpoint
     
     def _update_metadata_paths(self, original_metadata: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -183,20 +249,34 @@ class DatasetExporter:
         """
         metadata = json.loads(json.dumps(original_metadata))  # Deep copy
         
-        # Normalize paths
+        # Update generation paths
         for generation in metadata.get('generations', []):
+            char_idx = generation.get('char_index', 0)
+            style = generation.get('style', 'style0')
+            
             # Update content image path
-            if 'content_image_path' in generation:
-                char_idx = generation.get('char_index', 0)
-                generation['content_image_path'] = f"{self.config.output_dir}/ContentImage/char{char_idx}.png"
+            generation['content_image_path'] = f"{self.config.output_dir}/ContentImage/char{char_idx}.png"
             
             # Update target image path
-            if 'target_image_path' in generation:
-                char_idx = generation.get('char_index', 0)
-                style = generation.get('style', 'style0')
-                generation['target_image_path'] = f"{self.config.output_dir}/TargetImage/{style}/{style}+char{char_idx}.png"
+            generation['target_image_path'] = f"{self.config.output_dir}/TargetImage/{style}/{style}+char{char_idx}.png"
         
         return metadata
+    
+    def _log_metadata_stats(self, metadata: Dict[str, Any]) -> None:
+        """Log metadata statistics"""
+        try:
+            num_generations = len(metadata.get('generations', []))
+            num_styles = len(metadata.get('styles', []))
+            num_chars = len(metadata.get('characters', []))
+            fonts = metadata.get('fonts', [])
+            
+            print(f"\n📊 Metadata Statistics:")
+            print(f"  Total generations: {num_generations}")
+            print(f"  Total characters: {num_chars}")
+            print(f"  Total styles: {num_styles}")
+            print(f"  Fonts: {', '.join(fonts) if fonts else 'unknown'}")
+        except Exception as e:
+            print(f"⚠ Could not log metadata stats: {e}")
     
     def _export_with_reconstructed_metadata(self, dataset: Dataset) -> Dict[str, Any]:
         """
@@ -210,22 +290,27 @@ class DatasetExporter:
         content_dir = self.output_dir / "ContentImage"
         target_base_dir = self.output_dir / "TargetImage"
         
-        # Export images
         print("\nExporting images...")
         content_samples_exported = 0
         target_samples_exported = 0
         
         metadata: Dict[str, Any] = {
             'generations': [],
-            'metrics': {},
+            'metrics': {
+                'lpips': [],
+                'ssim': [],
+                'inference_times': []
+            },
             'styles': [],
             'characters': [],
+            'fonts': [],
             'total_chars': 0,
             'total_styles': 0
         }
         
         unique_chars = set()
         unique_styles = set()
+        unique_fonts = set()
         
         for sample in tqdm(dataset, desc="📊 Exporting samples", ncols=80):
             char_idx = sample.get('char_index', 0)
@@ -236,6 +321,7 @@ class DatasetExporter:
             
             unique_chars.add(character)
             unique_styles.add(style)
+            unique_fonts.add(font)
             
             # Export content image
             if 'content_image' in sample:
@@ -270,18 +356,22 @@ class DatasetExporter:
         # Update metadata summary
         metadata['characters'] = sorted(list(unique_chars))
         metadata['styles'] = sorted(list(unique_styles))
+        metadata['fonts'] = sorted(list(unique_fonts))
         metadata['total_chars'] = len(unique_chars)
         metadata['total_styles'] = len(unique_styles)
         
         print(f"✓ Exported {content_samples_exported} content images")
         print(f"✓ Exported {target_samples_exported} target images")
         
-        # Save metadata
+        # Save reconstructed metadata
+        print("\nSaving reconstructed metadata...")
         results_path = self.output_dir / "results.json"
         with open(results_path, 'w', encoding='utf-8') as f:
             json.dump(metadata, f, indent=2, ensure_ascii=False)
+        print(f"  ✓ Saved reconstructed results.json")
         
-        print(f"\n✓ Saved reconstructed results.json to {results_path}")
+        # Log metadata statistics
+        self._log_metadata_stats(metadata)
         
         return metadata
 
@@ -297,6 +387,7 @@ def export_dataset(
 ) -> None:
     """
     Export dataset from Hub or local path to disk
+    Handles both results.json and results_checkpoint.json
     
     Args:
         output_dir: Directory to export to
@@ -305,7 +396,7 @@ def export_dataset(
         split: Dataset split
         create_metadata: Whether to create metadata
         token: HF token
-        preserve_original: Try to preserve original results.json
+        preserve_original: Try to preserve original metadata files
     """
     
     config = ExportConfig(
@@ -319,7 +410,7 @@ def export_dataset(
     )
     
     exporter = DatasetExporter(config)
-    metadata = exporter.export()
+    results_metadata, checkpoint_metadata = exporter.export()
     
     print("\n" + "="*60)
     print("✓ EXPORT COMPLETE!")
@@ -334,7 +425,13 @@ def export_dataset(
     print(f"    │   ├── style0/")
     print(f"    │   ├── style1/")
     print(f"    │   └── ...")
-    print(f"    └── results.json (original or reconstructed)")
+    
+    if results_metadata:
+        print(f"    ├── results.json ✅ ({len(results_metadata.get('generations', []))} generations)")
+    
+    if checkpoint_metadata:
+        print(f"    └── results_checkpoint.json ✅ ({len(checkpoint_metadata.get('generations', []))} generations)")
+    
     print("="*60)
 
 
@@ -353,9 +450,9 @@ if __name__ == "__main__":
     parser.add_argument('--token', type=str, default=None,
                        help='Hugging Face token')
     parser.add_argument('--preserve_original', action='store_true', default=True,
-                       help='Preserve original results.json from pipeline')
+                       help='Preserve original results.json and results_checkpoint.json')
     parser.add_argument('--no_preserve_original', action='store_false', dest='preserve_original',
-                       help='Do not preserve original results.json')
+                       help='Do not preserve original metadata files')
     
     args = parser.parse_args()
     
@@ -368,9 +465,11 @@ if __name__ == "__main__":
         preserve_original=args.preserve_original
     )
 
-"""Example
 
-# Export with original metadata preserved
+"""
+USAGE EXAMPLES:
+
+# Export with both metadata files preserved from Hub
 python export_hf_dataset_to_disk.py \
   --output_dir "my_dataset/train_original" \
   --repo_id "dzungpham/font-diffusion-generated-data" \
@@ -378,11 +477,22 @@ python export_hf_dataset_to_disk.py \
   --token "hf_xxxxx" \
   --preserve_original
 
-# Or without preservation (fallback to reconstruction)
+# Export from local dataset
 python export_hf_dataset_to_disk.py \
   --output_dir "my_dataset/train" \
+  --local_dataset_path "cached_dataset/train" \
+  --preserve_original
+
+# Export without preserving metadata (reconstruct from dataset)
+python export_hf_dataset_to_disk.py \
+  --output_dir "my_dataset/val" \
   --repo_id "dzungpham/font-diffusion-generated-data" \
-  --split "train" \
+  --split "val" \
   --no_preserve_original
 
-  """
+OUTPUT FILES:
+  ✅ results.json          - Main results with all generations
+  ✅ results_checkpoint.json - Checkpoint saved during generation
+  ✅ ContentImage/         - Original character images
+  ✅ TargetImage/          - Generated styled character images
+"""

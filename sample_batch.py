@@ -510,6 +510,34 @@ def save_checkpoint(results: Dict[str, Any],
         print(f"  ⚠ Error saving checkpoint: {e}")
 
 
+def save_results_json(results: Dict[str, Any], 
+                     output_dir: str,
+                     checkpoint_name: str = 'results.json') -> None:
+    """
+    Save results.json with latest completed generation data
+    Also updates results_latest.json as a backup
+    """
+    try:
+        results_path: str = os.path.join(output_dir, checkpoint_name)
+        results_latest_path: str = os.path.join(output_dir, 'results_latest.json')
+        
+        # Save main results.json
+        with open(results_path, 'w', encoding='utf-8') as f:
+            json.dump(results, f, indent=2, ensure_ascii=False)
+        
+        # Also save backup with timestamp
+        timestamp: str = time.strftime('%Y%m%d_%H%M%S')
+        results_backup_path: str = os.path.join(output_dir, f'results_backup_{timestamp}.json')
+        
+        with open(results_backup_path, 'w', encoding='utf-8') as f:
+            json.dump(results, f, indent=2, ensure_ascii=False)
+        
+        print(f"  ✅ Results saved: {checkpoint_name} ({len(results['generations'])} generations)")
+        
+    except Exception as e:
+        print(f"  ⚠ Error saving results.json: {e}")
+
+
 def load_checkpoint(checkpoint_path: str) -> Optional[Dict[str, Any]]:
     """Load results from checkpoint"""
     try:
@@ -522,7 +550,6 @@ def load_checkpoint(checkpoint_path: str) -> Optional[Dict[str, Any]]:
     except Exception as e:
         print(f"⚠ Error loading checkpoint: {e}")
         return None
-
 
 def generate_content_images(
     characters: List[str], 
@@ -686,6 +713,7 @@ def batch_generate_images(pipe: FontDiffuserDPMPipeline,
                           index_manager: Optional[ResultsIndexManager] = None) -> Dict[str, Any]:
     """
     Generate images in batches for all fonts and styles with checkpoint support
+    ✅ Saves results.json periodically (every N styles)
     """
     
     # Use provided manager or create new one
@@ -771,6 +799,9 @@ def batch_generate_images(pipe: FontDiffuserDPMPipeline,
     skipped_count = 0
     generated_count = 0
     failed_no_font_count = 0
+    
+    # Track generation start time
+    generation_start_time: float = time.time()
 
     for style_idx, style_path in style_iterator:
         style_name: str = f"style{style_idx}"
@@ -815,7 +846,7 @@ def batch_generate_images(pipe: FontDiffuserDPMPipeline,
                 tqdm.write(f"  ✓ {style_name} ({font_name}): {len(images)} images in {batch_time:.2f}s "
                         f"({batch_time/len(images):.3f}s/img)")
 
-                style_idx_final = index_manager.get_style_index(style_name)  # ✅ Define before use
+                style_idx_final = index_manager.get_style_index(style_name)
 
                 # Save generated images
                 for char, img in zip(valid_chars, images):
@@ -844,15 +875,33 @@ def batch_generate_images(pipe: FontDiffuserDPMPipeline,
 
                 results['metrics']['inference_times'].append({
                     'style': style_name,
-                    'style_index': style_idx_final,  # ✅ Now defined
+                    'style_index': style_idx_final,
                     'font': font_name,
                     'total_time': batch_time,
                     'num_images': len(images),
                     'time_per_image': batch_time / len(images) if images else 0
                 })
-            # Periodic checkpoint saving
-            if args.save_interval > 0 and (style_idx + 1) % args.save_interval == 0:
-                save_checkpoint(results, output_dir)
+
+            # ✅ PERIODIC SAVING: Save results.json after each style
+            if args.save_interval > 0:
+                # Save checkpoint every N styles
+                if (style_idx + 1) % args.save_interval == 0:
+                    elapsed_time: float = time.time() - generation_start_time
+                    tqdm.write(f"\n{'='*60}")
+                    tqdm.write(f"📊 PERIODIC CHECKPOINT (Style {style_idx + 1}/{len(style_paths)})")
+                    tqdm.write(f"{'='*60}")
+                    tqdm.write(f"Generated: {generated_count} pairs")
+                    tqdm.write(f"Skipped: {skipped_count} pairs")
+                    tqdm.write(f"Elapsed time: {elapsed_time:.1f}s")
+                    tqdm.write(f"Estimated remaining: {elapsed_time * (len(style_paths) - style_idx - 1) / (style_idx + 1):.1f}s")
+                    
+                    # Save both checkpoint and main results.json
+                    save_checkpoint(results, output_dir, 'results_checkpoint.json')
+                    save_results_json(results, output_dir, 'results.json')  # ✅ Save main results.json
+                    tqdm.write(f"{'='*60}\n")
+            else:
+                # Save main results.json after every style if save_interval is 0
+                save_results_json(results, output_dir, 'results.json')
 
         except Exception as e:
             tqdm.write(f"  ✗ {style_name}: Error - {e}")
@@ -869,6 +918,7 @@ def batch_generate_images(pipe: FontDiffuserDPMPipeline,
     print(f"    ├─ Skipped (exist):     {skipped_count} pairs")
     print(f"    └─ Failed (no font):    {failed_no_font_count} pairs")
     print(f"\n  Final results.json: {len(results['generations'])} samples")
+    print(f"  Total generation time: {(time.time() - generation_start_time)/60:.1f} minutes")
     print("="*60)
 
     return results
@@ -1073,6 +1123,7 @@ def main() -> None:
         print(f"  Number of Characters: {len(characters)} (lines {args.start_line}-{args.end_line or 'end'})")
         print(f"  Number of Styles: {len(style_paths)}")
         print(f"  Output Directory: {args.output_dir}")
+        print(f"  Save Interval: Every {args.save_interval} styles" if args.save_interval > 0 else "  Save Interval: End only")
 
         os.makedirs(args.output_dir, exist_ok=True)
 
@@ -1091,7 +1142,7 @@ def main() -> None:
         if not resume_results:
             char_paths: Dict[str, str]
             char_paths, index_manager = generate_content_images(
-                characters, font_manager, args.output_dir, args, index_manager  # ✅ Pass manager
+                characters, font_manager, args.output_dir, args, index_manager
             )
 
         # Create args namespace for pipeline
@@ -1105,7 +1156,7 @@ def main() -> None:
         # Generate target images with same index manager
         results: Dict[str, Any] = batch_generate_images(
             pipe, characters, style_paths, args.output_dir,
-            pipeline_args, evaluator, font_manager, resume_results, index_manager  # ✅ Pass manager
+            pipeline_args, evaluator, font_manager, resume_results, index_manager
         )
 
         # Evaluate if requested
@@ -1114,11 +1165,18 @@ def main() -> None:
                 results, evaluator, args.ground_truth_dir, args.compute_fid
             )
 
-        # Save final results
+        # ✅ Save final results (comprehensive)
         results_path: str = os.path.join(args.output_dir, 'results.json')
         with open(results_path, 'w', encoding='utf-8') as f:
             json.dump(results, f, indent=2, ensure_ascii=False)
-        print(f"\n✓ Results saved to {results_path}")
+        print(f"\n✓ Final results saved to {results_path}")
+        
+        # Also save backup
+        timestamp: str = time.strftime('%Y%m%d_%H%M%S')
+        results_final_backup: str = os.path.join(args.output_dir, f'results_final_{timestamp}.json')
+        with open(results_final_backup, 'w', encoding='utf-8') as f:
+            json.dump(results, f, indent=2, ensure_ascii=False)
+        print(f"✓ Backup saved to {results_final_backup}")
 
         if args.use_wandb:
             log_to_wandb(results, args)
@@ -1135,27 +1193,30 @@ def main() -> None:
         print(f"    ├── TargetImage/")
         print(f"    │   ├── style0/")
         print(f"    │   │   ├── style0+char0.png")
-        print(f"    │   │   ├── style0+char1.png")
-        print(f"    │   │   └── ...")
-        print(f"    │   ├── style1/")
         print(f"    │   │   └── ...")
         print(f"    │   └── ...")
-        print(f"    ├── results.json (with char_index and style_index)")
-        print(f"    └── results_checkpoint.json (if using --save_interval)")
+        print(f"    ├── results.json ✅ (updated periodically)")
+        print(f"    ├── results_checkpoint.json (intermediate)")
+        print(f"    └── results_backup_*.json (timestamped)")
 
     except KeyboardInterrupt:
         print("\n\n⚠ Generation interrupted by user!")
-        print("💾 Saving checkpoint before exit...")
-        if 'results' in locals():
+        print("💾 Saving emergency checkpoint before exit...")
+        if 'results' in locals() and results:
             save_checkpoint(results, args.output_dir, 'results_interrupted.json')
+            save_results_json(results, args.output_dir, 'results.json')  # ✅ Save latest state
+            print("✓ Latest state saved to results.json")
         sys.exit(1)
 
     except Exception as e:
         print(f"\n\n✗ Fatal error: {e}")
         import traceback
         traceback.print_exc()
+        
+        # Save emergency checkpoint
+        if 'results' in locals() and results:
+            save_results_json(results, args.output_dir, 'results.json')
         sys.exit(1)
-
 
 if __name__ == "__main__":
     main()
