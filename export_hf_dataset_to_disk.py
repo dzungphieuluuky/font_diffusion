@@ -1,13 +1,13 @@
 """
 Export Hugging Face dataset back to original FontDiffusion directory structure
-Useful for inspection, backup, or sharing the generated data
+Preserves original results.json from pipeline generation
 """
-
-import os
-import json
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from dataclasses import dataclass
+import json
+import os
+import shutil
 
 from datasets import Dataset, load_dataset
 from PIL import Image as PILImage
@@ -16,245 +16,274 @@ from tqdm import tqdm
 
 @dataclass
 class ExportConfig:
-    """Configuration for dataset export"""
-    output_dir: str  # Root output directory (data_examples/train)
-    repo_id: Optional[str] = None  # HF repo ID to load from
-    local_dataset_path: Optional[str] = None  # Local dataset path to load from
+    output_dir: str
+    repo_id: Optional[str] = None
+    local_dataset_path: Optional[str] = None
     split: str = "train"
-    create_metadata: bool = True  # Create results.json metadata
-    token: Optional[str] = None  # HF token for private repos
+    create_metadata: bool = True
+    token: Optional[str] = None
+    preserve_original_metadata: bool = True  # ✅ New flag
 
 
 class DatasetExporter:
-    """Export Hugging Face dataset to original directory structure"""
+    """Export Hugging Face dataset to disk, preserving original metadata"""
     
     def __init__(self, config: ExportConfig):
         self.config = config
         self.output_dir = Path(config.output_dir)
-        self.content_dir = self.output_dir / "ContentImage"
-        self.target_dir = self.output_dir / "TargetImage"
-        
-        # Create directories
-        self._create_directories()
-    
-    def _create_directories(self) -> None:
-        """Create output directory structure"""
         self.output_dir.mkdir(parents=True, exist_ok=True)
-        self.content_dir.mkdir(exist_ok=True)
-        self.target_dir.mkdir(exist_ok=True)
-        
-        print(f"✓ Created output directories:")
-        print(f"  Root: {self.output_dir}")
-        print(f"  Content: {self.content_dir}")
-        print(f"  Target: {self.target_dir}")
     
-    def load_dataset(self) -> Dataset:
-        """Load dataset from Hub or local path"""
-        print("\n" + "="*60)
-        print("LOADING DATASET")
-        print("="*60)
-        
-        if self.config.repo_id:
-            print(f"\nLoading from Hub: {self.config.repo_id}")
-            # ✅ Pass token for private repos
-            dataset = load_dataset(
-                self.config.repo_id,
-                split=self.config.split,
-                token=self.config.token)  # ← Add token here
-        elif self.config.local_dataset_path:
-            print(f"\nLoading from local path: {self.config.local_dataset_path}")
-            dataset = Dataset.load_from_disk(self.config.local_dataset_path)
-        else:
-            raise ValueError("Either repo_id or local_dataset_path must be provided")
-        
-        print(f"✓ Loaded dataset with {len(dataset)} samples")
-        print(f"  Columns: {dataset.column_names}")
-        
-        return dataset
-    
-    def export_to_disk(self, dataset: Dataset) -> Dict[str, Any]:
+    def export(self) -> Dict[str, Any]:
         """
-        Export dataset to directory structure:
-        output_dir/
-        ├── ContentImage/
-        │   ├── char0.png
-        │   ├── char1.png
-        │   └── ...
-        └── TargetImage/
-            ├── style0/
-            │   ├── style0+char0.png
-            │   ├── style0+char1.png
-            │   └── ...
-            ├── style1/
-            │   ├── style1+char0.png
-            │   └── ...
-            └── ...
+        Export dataset from Hub to disk
+        
+        Returns:
+            Metadata dict (original or reconstructed)
         """
         print("\n" + "="*60)
         print("EXPORTING DATASET TO DISK")
         print("="*60)
         
-        # Get unique styles and characters
-        unique_styles = sorted(set(dataset['style']))
-        unique_chars = sorted(set(dataset['character']))
-        unique_char_indices = sorted(set(dataset['char_index']))
+        # Load dataset
+        if self.config.local_dataset_path:
+            print(f"Loading local dataset from {self.config.local_dataset_path}...")
+            dataset = Dataset.load_from_disk(self.config.local_dataset_path)
+        else:
+            print(f"Loading dataset from Hub: {self.config.repo_id}#{self.config.split}...")
+            dataset = load_dataset(
+                self.config.repo_id,
+                split=self.config.split,
+                token=self.config.token
+            )
         
-        print(f"\nFound:")
-        print(f"  {len(unique_styles)} unique styles")
-        print(f"  {len(unique_chars)} unique characters")
-        print(f"  {len(unique_char_indices)} character indices")
+        # Create directory structure
+        content_dir = self.output_dir / "ContentImage"
+        target_base_dir = self.output_dir / "TargetImage"
         
-        # Track exported data for metadata
-        exported_data = {
-            'styles': unique_styles,
-            'characters': unique_chars,
-            'total_samples': len(dataset),
-            'generations': []
-        }
+        content_dir.mkdir(parents=True, exist_ok=True)
+        target_base_dir.mkdir(parents=True, exist_ok=True)
         
-        # Create style directories
-        style_dirs = {}
-        for style in unique_styles:
-            style_path = self.target_dir / style
-            style_path.mkdir(exist_ok=True)
-            style_dirs[style] = style_path
+        # Check if original results.json exists in dataset
+        original_metadata = self._try_load_original_metadata()
         
-        print(f"\n✓ Created {len(style_dirs)} style directories")
-        
-        # Export content images (one per character index)
-        print("\n" + "-"*60)
-        print("Exporting content images...")
-        print("-"*60)
-        
-        exported_content = {}
-        content_iterator = tqdm(dataset, desc="🖼️  Processing", ncols=80)
-        
-        for sample in content_iterator:
-            char_idx = sample['char_index']
-            
-            # Save content image (once per unique char_index)
-            if char_idx not in exported_content:
-                content_image = sample['content_image']
-                content_path = self.content_dir / f"char{char_idx}.png"
-                
-                if isinstance(content_image, PILImage.Image):
-                    content_image.save(content_path)
-                else:
-                    # Handle case where it's already a path string
-                    content_image_obj = PILImage.open(content_image).convert('RGB')
-                    content_image_obj.save(content_path)
-                
-                exported_content[char_idx] = str(content_path)
-        
-        print(f"✓ Exported {len(exported_content)} content images")
-        
-        # Export target images
-        print("\n" + "-"*60)
-        print("Exporting target images...")
-        print("-"*60)
-        
-        target_iterator = tqdm(dataset, desc="🎨 Styles", ncols=80)
-        exported_targets = 0
-        
-        for sample in target_iterator:
-            char_idx = sample['char_index']
-            style = sample['style']
-            character = sample['character']
-            font = sample.get('font', 'unknown')
-            
-            # Save target image
-            target_image = sample['target_image']
-            target_path = style_dirs[style] / f"{style}+char{char_idx}.png"
-            
-            if isinstance(target_image, PILImage.Image):
-                target_image.save(target_path)
-            else:
-                # Handle case where it's already a path string
-                target_image_obj = PILImage.open(target_image).convert('RGB')
-                target_image_obj.save(target_path)
-            
-            # Add to metadata
-            exported_data['generations'].append({
-                'char_index': int(char_idx),
-                'character': character,
-                'style': style,
-                'style_index': sample.get('style_index', -1),
-                'font': font,
-                'target_image_path': str(target_path),
-                'content_image_path': exported_content[char_idx]
-            })
-            
-            exported_targets += 1
-        
-        print(f"✓ Exported {exported_targets} target images")
-        
-        return exported_data
+        if original_metadata and self.config.preserve_original_metadata:
+            print("\n✅ Found original results.json metadata - preserving it")
+            return self._export_with_original_metadata(dataset, original_metadata)
+        else:
+            print("\n⚠ Original metadata not found - reconstructing from dataset")
+            return self._export_with_reconstructed_metadata(dataset)
     
-    def save_metadata(self, exported_data: Dict[str, Any]) -> None:
-        """Save metadata to results.json"""
-        if not self.config.create_metadata:
-            print("\n⊘ Skipping metadata creation")
-            return
-        
-        print("\n" + "-"*60)
-        print("Saving metadata...")
-        print("-"*60)
-        
-        metadata_path = self.output_dir / "results.json"
-        
-        with open(metadata_path, 'w', encoding='utf-8') as f:
-            json.dump(exported_data, f, indent=2, ensure_ascii=False)
-        
-        print(f"✓ Saved metadata to {metadata_path}")
-        print(f"  Total generations: {len(exported_data['generations'])}")
-        print(f"  Styles: {len(exported_data['styles'])}")
-        print(f"  Characters: {len(exported_data['characters'])}")
+    def _try_load_original_metadata(self) -> Optional[Dict[str, Any]]:
+        """
+        Try to load original results.json from various sources
+        1. From dataset card / extra files
+        2. From Hub repository files
+        """
+        try:
+            # Method 1: Check if results.json is in Hub repo files
+            if self.config.repo_id:
+                from huggingface_hub import hf_hub_download
+                
+                try:
+                    metadata_path = hf_hub_download(
+                        repo_id=self.config.repo_id,
+                        filename="results.json",
+                        repo_type="dataset",
+                        token=self.config.token
+                    )
+                    
+                    with open(metadata_path, 'r', encoding='utf-8') as f:
+                        metadata = json.load(f)
+                    
+                    print(f"✓ Loaded original results.json from Hub")
+                    return metadata
+                except Exception as e:
+                    print(f"  (results.json not in Hub: {e})")
+            
+            # Method 2: Check local cache
+            local_cache_path = self.output_dir.parent / "results.json"
+            if local_cache_path.exists():
+                with open(local_cache_path, 'r', encoding='utf-8') as f:
+                    metadata = json.load(f)
+                print(f"✓ Loaded original results.json from local cache")
+                return metadata
+            
+            return None
+        except Exception as e:
+            print(f"  Could not load original metadata: {e}")
+            return None
     
-    def generate_summary(self, exported_data: Dict[str, Any]) -> None:
-        """Generate and print summary report"""
+    def _export_with_original_metadata(self, 
+                                       dataset: Dataset, 
+                                       original_metadata: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Export dataset while preserving original results.json structure
+        Ensures output paths match actual files
+        """
         print("\n" + "="*60)
-        print("EXPORT SUMMARY")
+        print("EXPORTING WITH ORIGINAL METADATA")
         print("="*60)
         
-        summary = {
-            'root_directory': str(self.output_dir),
-            'total_samples': exported_data['total_samples'],
-            'styles': {
-                'count': len(exported_data['styles']),
-                'list': exported_data['styles']
-            },
-            'characters': {
-                'count': len(exported_data['characters']),
-                'sample': exported_data['characters'][:5] + (['...'] if len(exported_data['characters']) > 5 else [])
-            },
-            'content_images': len([g for g in exported_data['generations'] if g['char_index'] == 0]),
-            'target_images': len(exported_data['generations'])
+        content_dir = self.output_dir / "ContentImage"
+        target_base_dir = self.output_dir / "TargetImage"
+        
+        # Export content images
+        print("\nExporting content images...")
+        content_samples_exported = 0
+        
+        for idx, sample in enumerate(tqdm(dataset, desc="📝 Exporting content images", ncols=80)):
+            if 'content_image' in sample:
+                char_idx = sample.get('char_index', idx)
+                content_img = sample['content_image']
+                
+                if isinstance(content_img, PILImage.Image):
+                    content_path = content_dir / f"char{char_idx}.png"
+                    content_img.save(str(content_path))
+                    content_samples_exported += 1
+        
+        print(f"✓ Exported {content_samples_exported} content images")
+        
+        # Export target images organized by style
+        print("\nExporting target images...")
+        target_samples_exported = 0
+        
+        # Create style directories and track exports
+        for sample in tqdm(dataset, desc="🎨 Exporting target images", ncols=80):
+            if 'target_image' in sample:
+                char_idx = sample.get('char_index', 0)
+                style = sample.get('style', 'style0')
+                
+                style_dir = target_base_dir / style
+                style_dir.mkdir(parents=True, exist_ok=True)
+                
+                target_img = sample['target_image']
+                
+                if isinstance(target_img, PILImage.Image):
+                    target_path = style_dir / f"{style}+char{char_idx}.png"
+                    target_img.save(str(target_path))
+                    target_samples_exported += 1
+        
+        print(f"✓ Exported {target_samples_exported} target images")
+        
+        # ✅ Update original metadata with correct file paths
+        updated_metadata = self._update_metadata_paths(original_metadata)
+        
+        # Save updated metadata
+        results_path = self.output_dir / "results.json"
+        with open(results_path, 'w', encoding='utf-8') as f:
+            json.dump(updated_metadata, f, indent=2, ensure_ascii=False)
+        
+        print(f"\n✓ Saved original results.json to {results_path}")
+        
+        return updated_metadata
+    
+    def _update_metadata_paths(self, original_metadata: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Update file paths in original metadata to match export directory
+        """
+        metadata = json.loads(json.dumps(original_metadata))  # Deep copy
+        
+        # Normalize paths
+        for generation in metadata.get('generations', []):
+            # Update content image path
+            if 'content_image_path' in generation:
+                char_idx = generation.get('char_index', 0)
+                generation['content_image_path'] = f"{self.config.output_dir}/ContentImage/char{char_idx}.png"
+            
+            # Update target image path
+            if 'target_image_path' in generation:
+                char_idx = generation.get('char_index', 0)
+                style = generation.get('style', 'style0')
+                generation['target_image_path'] = f"{self.config.output_dir}/TargetImage/{style}/{style}+char{char_idx}.png"
+        
+        return metadata
+    
+    def _export_with_reconstructed_metadata(self, dataset: Dataset) -> Dict[str, Any]:
+        """
+        Reconstruct metadata from dataset if original not available
+        ⚠ Use only as fallback
+        """
+        print("\n" + "="*60)
+        print("RECONSTRUCTING METADATA FROM DATASET")
+        print("="*60)
+        
+        content_dir = self.output_dir / "ContentImage"
+        target_base_dir = self.output_dir / "TargetImage"
+        
+        # Export images
+        print("\nExporting images...")
+        content_samples_exported = 0
+        target_samples_exported = 0
+        
+        metadata: Dict[str, Any] = {
+            'generations': [],
+            'metrics': {},
+            'styles': [],
+            'characters': [],
+            'total_chars': 0,
+            'total_styles': 0
         }
         
-        print(f"\n✓ Export Statistics:")
-        print(f"  Root: {summary['root_directory']}")
-        print(f"  Total samples: {summary['total_samples']}")
-        print(f"  Styles: {summary['styles']['count']}")
-        print(f"  Characters: {summary['characters']['count']}")
-        print(f"  Target images: {summary['target_images']}")
+        unique_chars = set()
+        unique_styles = set()
         
-        print(f"\n✓ Directory Structure:")
-        print(f"  {self.output_dir}/")
-        print(f"  ├── ContentImage/ ({len([g for g in exported_data['generations'] if g['char_index'] == 0])} images)")
-        print(f"  ├── TargetImage/")
-        for style in summary['styles']['list'][:3]:
-            count = len([g for g in exported_data['generations'] if g['style'] == style])
-            print(f"  │   ├── {style}/ ({count} images)")
-        if len(summary['styles']['list']) > 3:
-            print(f"  │   ├── ... ({len(summary['styles']['list']) - 3} more styles)")
-        print(f"  └── results.json")
+        for sample in tqdm(dataset, desc="📊 Exporting samples", ncols=80):
+            char_idx = sample.get('char_index', 0)
+            character = sample.get('character', '?')
+            style = sample.get('style', 'style0')
+            style_idx = sample.get('style_index', 0)
+            font = sample.get('font', 'unknown')
+            
+            unique_chars.add(character)
+            unique_styles.add(style)
+            
+            # Export content image
+            if 'content_image' in sample:
+                content_img = sample['content_image']
+                if isinstance(content_img, PILImage.Image):
+                    content_path = content_dir / f"char{char_idx}.png"
+                    content_img.save(str(content_path))
+                    content_samples_exported += 1
+            
+            # Export target image
+            if 'target_image' in sample:
+                target_img = sample['target_image']
+                if isinstance(target_img, PILImage.Image):
+                    style_dir = target_base_dir / style
+                    style_dir.mkdir(parents=True, exist_ok=True)
+                    
+                    target_path = style_dir / f"{style}+char{char_idx}.png"
+                    target_img.save(str(target_path))
+                    target_samples_exported += 1
+            
+            # Add to metadata
+            metadata['generations'].append({
+                'character': character,
+                'char_index': char_idx,
+                'style': style,
+                'style_index': style_idx,
+                'font': font,
+                'content_image_path': f"{self.config.output_dir}/ContentImage/char{char_idx}.png",
+                'target_image_path': f"{self.config.output_dir}/TargetImage/{style}/{style}+char{char_idx}.png"
+            })
         
-        # Save summary to file
-        summary_path = self.output_dir / "export_summary.json"
-        with open(summary_path, 'w', encoding='utf-8') as f:
-            json.dump(summary, f, indent=2)
+        # Update metadata summary
+        metadata['characters'] = sorted(list(unique_chars))
+        metadata['styles'] = sorted(list(unique_styles))
+        metadata['total_chars'] = len(unique_chars)
+        metadata['total_styles'] = len(unique_styles)
         
-        print(f"\n✓ Summary saved to {summary_path}")
+        print(f"✓ Exported {content_samples_exported} content images")
+        print(f"✓ Exported {target_samples_exported} target images")
+        
+        # Save metadata
+        results_path = self.output_dir / "results.json"
+        with open(results_path, 'w', encoding='utf-8') as f:
+            json.dump(metadata, f, indent=2, ensure_ascii=False)
+        
+        print(f"\n✓ Saved reconstructed results.json to {results_path}")
+        
+        return metadata
 
 
 def export_dataset(
@@ -263,22 +292,21 @@ def export_dataset(
     local_dataset_path: Optional[str] = None,
     split: str = "train",
     create_metadata: bool = True,
-    token: Optional[str] = None  # ← Add token parameter
+    token: Optional[str] = None,
+    preserve_original: bool = True
 ) -> None:
     """
-    Export dataset to original directory structure
+    Export dataset from Hub or local path to disk
     
     Args:
-        output_dir: Root output directory (data_examples/train)
-        repo_id: Hugging Face repo ID to load from
-        local_dataset_path: Local dataset path to load from
-        split: Dataset split name
-        create_metadata: Whether to create results.json
-        token: HF token for private repos
+        output_dir: Directory to export to
+        repo_id: Hub repo ID
+        local_dataset_path: Local dataset path
+        split: Dataset split
+        create_metadata: Whether to create metadata
+        token: HF token
+        preserve_original: Try to preserve original results.json
     """
-    
-    if not repo_id and not local_dataset_path:
-        raise ValueError("Either repo_id or local_dataset_path must be provided")
     
     config = ExportConfig(
         output_dir=output_dir,
@@ -286,60 +314,75 @@ def export_dataset(
         local_dataset_path=local_dataset_path,
         split=split,
         create_metadata=create_metadata,
-        token=token  # ← Pass token
+        token=token,
+        preserve_original_metadata=preserve_original
     )
     
     exporter = DatasetExporter(config)
+    metadata = exporter.export()
     
-    # Load dataset
-    dataset = exporter.load_dataset()
-    
-    # Export to disk
-    exported_data = exporter.export_to_disk(dataset)
-    
-    # Save metadata
-    exporter.save_metadata(exported_data)
-    
-    # Generate summary
-    exporter.generate_summary(exported_data)
-    
-    print("\n✓ Export completed successfully!")
+    print("\n" + "="*60)
+    print("✓ EXPORT COMPLETE!")
+    print("="*60)
+    print(f"\nOutput structure:")
+    print(f"  {output_dir}/")
+    print(f"    ├── ContentImage/")
+    print(f"    │   ├── char0.png")
+    print(f"    │   ├── char1.png")
+    print(f"    │   └── ...")
+    print(f"    ├── TargetImage/")
+    print(f"    │   ├── style0/")
+    print(f"    │   ├── style1/")
+    print(f"    │   └── ...")
+    print(f"    └── results.json (original or reconstructed)")
+    print("="*60)
 
 
 if __name__ == "__main__":
     import argparse
     
-    parser = argparse.ArgumentParser(description="Export dataset to original directory structure")
+    parser = argparse.ArgumentParser(description="Export Hugging Face dataset to disk")
     parser.add_argument('--output_dir', type=str, required=True,
-                       help='Root output directory (e.g., data_examples/train)')
+                       help='Directory to export to')
     parser.add_argument('--repo_id', type=str, default=None,
-                       help='Hugging Face repo ID to load from')
+                       help='Hugging Face repo ID')
     parser.add_argument('--local_dataset_path', type=str, default=None,
-                       help='Local dataset path to load from')
+                       help='Local dataset path')
     parser.add_argument('--split', type=str, default='train',
-                       help='Dataset split name')
-    parser.add_argument('--no-metadata', action='store_true', default=False,
-                       help='Do not create results.json metadata')
-    parser.add_argument('--token', type=str, default=None,  # ← Add this
-                       help='Hugging Face token for private repos')
+                       help='Dataset split')
+    parser.add_argument('--token', type=str, default=None,
+                       help='Hugging Face token')
+    parser.add_argument('--preserve_original', action='store_true', default=True,
+                       help='Preserve original results.json from pipeline')
+    parser.add_argument('--no_preserve_original', action='store_false', dest='preserve_original',
+                       help='Do not preserve original results.json')
     
     args = parser.parse_args()
-    
-    print("\n" + "="*60)
-    print("FONTDIFFUSION DATASET EXPORTER")
-    print("="*60)
     
     export_dataset(
         output_dir=args.output_dir,
         repo_id=args.repo_id,
         local_dataset_path=args.local_dataset_path,
         split=args.split,
-        create_metadata=not args.no_metadata,
-        token=args.token  # ← Pass token
+        token=args.token,
+        preserve_original=args.preserve_original
     )
 
 """Example
-python export_dataset_to_disk.py \
-  --output_dir "data_examples/train" \
-  --repo_id "your_username/fontdiffusion-dataset" \
-  --split "train"""
+
+# Export with original metadata preserved
+python export_hf_dataset_to_disk.py \
+  --output_dir "my_dataset/train_original" \
+  --repo_id "dzungpham/font-diffusion-generated-data" \
+  --split "train_original" \
+  --token "hf_xxxxx" \
+  --preserve_original
+
+# Or without preservation (fallback to reconstruction)
+python export_hf_dataset_to_disk.py \
+  --output_dir "my_dataset/train" \
+  --repo_id "dzungpham/font-diffusion-generated-data" \
+  --split "train" \
+  --no_preserve_original
+
+  """

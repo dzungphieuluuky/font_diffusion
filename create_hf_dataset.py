@@ -1,9 +1,11 @@
 """
 Create Hugging Face dataset from generated FontDiffusion images and push to Hub
+Preserves and uploads original results.json metadata
 """
 
 import os
 import json
+import tempfile
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Tuple
 from dataclasses import dataclass
@@ -24,6 +26,7 @@ class FontDiffusionDatasetConfig:
     push_to_hub: bool = True
     private: bool = False
     token: Optional[str] = None  # HF token for private repos
+    upload_metadata: bool = True  # ✅ Upload original results.json
 
 
 class FontDiffusionDatasetBuilder:
@@ -64,7 +67,14 @@ class FontDiffusionDatasetBuilder:
         except Exception as e:
             print(f"\n⚠ Warning: Could not load results.json ({e})")
             print(f"  Proceeding without metadata...")
-            return None 
+            return None
+    
+    def _get_results_metadata_path(self) -> Optional[Path]:
+        """Get path to original results.json"""
+        results_path = self.data_dir / "results.json"
+        if results_path.exists():
+            return results_path
+        return None
            
     def build_dataset(self) -> Dataset:
         """
@@ -149,7 +159,7 @@ class FontDiffusionDatasetBuilder:
                 
                 # Extract information - use gen_info first, then fallback
                 character = gen_info.get('character', '?')
-                font_name = gen_info.get('font', 'unknown')  # Now gets from gen_info!
+                font_name = gen_info.get('font', 'unknown')
                 
                 row = {
                     'character': character,
@@ -217,7 +227,8 @@ class FontDiffusionDatasetBuilder:
         
         print(f"✓ Loaded {len(content_images)} content images")
         
-        return content_images    
+        return content_images
+    
     def push_to_hub(self, dataset: Dataset) -> None:
         """Push dataset to Hugging Face Hub"""
         if not self.config.push_to_hub:
@@ -240,19 +251,87 @@ class FontDiffusionDatasetBuilder:
                 token=self.config.token
             )
             
-            print(f"\n✓ Successfully pushed to Hub!")
+            print(f"\n✓ Successfully pushed dataset to Hub!")
             print(f"  Dataset URL: https://huggingface.co/datasets/{self.config.repo_id}")
+            
+            # ✅ Upload original results.json metadata
+            if self.config.upload_metadata:
+                self._upload_metadata_to_hub()
             
         except Exception as e:
             print(f"\n✗ Error pushing to Hub: {e}")
             raise
     
+    def _upload_metadata_to_hub(self) -> None:
+        """
+        Upload original results.json to Hub as a dataset file
+        Makes metadata accessible when exporting
+        """
+        results_path = self._get_results_metadata_path()
+        
+        if not results_path:
+            print("\n⚠ No results.json found - skipping metadata upload")
+            return
+        
+        try:
+            print("\n" + "="*60)
+            print("UPLOADING ORIGINAL METADATA")
+            print("="*60)
+            
+            from huggingface_hub import HfApi
+            
+            api = HfApi()
+            
+            print(f"Uploading results.json to {self.config.repo_id}...")
+            
+            # Upload results.json as a dataset file
+            api.upload_file(
+                path_or_fileobj=str(results_path),
+                path_in_repo="results.json",
+                repo_id=self.config.repo_id,
+                repo_type="dataset",
+                token=self.config.token,
+                commit_message=f"Upload original results.json for split '{self.config.split}'"
+            )
+            
+            print(f"\n✓ Successfully uploaded results.json!")
+            print(f"  File: https://huggingface.co/datasets/{self.config.repo_id}/blob/main/results.json")
+            
+            # Also log metadata statistics
+            with open(results_path, 'r', encoding='utf-8') as f:
+                metadata = json.load(f)
+            
+            num_generations = len(metadata.get('generations', []))
+            num_styles = len(metadata.get('styles', []))
+            num_chars = len(metadata.get('characters', []))
+            
+            print(f"\nMetadata Statistics:")
+            print(f"  Total generations: {num_generations}")
+            print(f"  Total styles: {num_styles}")
+            print(f"  Total characters: {num_chars}")
+            print(f"  Fonts: {', '.join(metadata.get('fonts', ['unknown']))}")
+            
+        except ImportError:
+            print("\n⚠ huggingface_hub not installed - skipping metadata upload")
+            print("  Install with: pip install huggingface_hub")
+        except Exception as e:
+            print(f"\n⚠ Warning: Could not upload metadata: {e}")
+            print(f"  You can manually upload results.json to the Hub repository")
+    
     def save_locally(self, output_path: str) -> None:
-        """Save dataset locally for inspection"""
+        """Save dataset and metadata locally for inspection"""
         print(f"\nSaving dataset locally to {output_path}")
         dataset = self.build_dataset()
         dataset.save_to_disk(output_path)
         print(f"✓ Dataset saved to {output_path}")
+        
+        # ✅ Also copy results.json locally
+        results_path = self._get_results_metadata_path()
+        if results_path:
+            import shutil
+            local_results_path = Path(output_path) / "results.json"
+            shutil.copy(results_path, local_results_path)
+            print(f"✓ Metadata saved to {local_results_path}")
 
 
 def create_and_push_dataset(
@@ -262,7 +341,8 @@ def create_and_push_dataset(
     push_to_hub: bool = True,
     private: bool = False,
     token: Optional[str] = None,
-    local_save_path: Optional[str] = None
+    local_save_path: Optional[str] = None,
+    upload_metadata: bool = True  # ✅ New parameter
 ) -> Dataset:
     """
     Create FontDiffusion dataset and optionally push to Hub
@@ -275,6 +355,7 @@ def create_and_push_dataset(
         private: Whether repo should be private
         token: HF token (if None, uses HUGGINGFACE_TOKEN env var)
         local_save_path: Path to save dataset locally
+        upload_metadata: Whether to upload original results.json  # ✅
     
     Returns:
         Dataset object
@@ -286,7 +367,8 @@ def create_and_push_dataset(
         split=split,
         push_to_hub=push_to_hub,
         private=private,
-        token=token
+        token=token,
+        upload_metadata=upload_metadata  # ✅
     )
     
     builder = FontDiffusionDatasetBuilder(config)
@@ -298,7 +380,7 @@ def create_and_push_dataset(
     if local_save_path:
         builder.save_locally(local_save_path)
     
-    # Push to Hub if requested
+    # Push to Hub if requested (includes metadata upload)
     if push_to_hub:
         builder.push_to_hub(dataset)
     
@@ -319,6 +401,8 @@ if __name__ == "__main__":
                        help='Make repository private')
     parser.add_argument('--no-push', action='store_true', default=False,
                        help='Do not push to Hub')
+    parser.add_argument('--no-metadata', action='store_true', default=False,
+                       help='Do not upload results.json metadata')
     parser.add_argument('--local-save', type=str, default=None,
                        help='Also save dataset locally to this path')
     parser.add_argument('--token', type=str, default=None,
@@ -337,21 +421,42 @@ if __name__ == "__main__":
         push_to_hub=not args.no_push,
         private=args.private,
         token=args.token,
-        local_save_path=args.local_save
+        local_save_path=args.local_save,
+        upload_metadata=not args.no_metadata  # ✅
     )
     
     print("\n✓ Done!")
-"""Example
-python sample_batch.py \
-  --characters "chars.txt" \
-  --style_images "styles/" \
-  --ckpt_dir "checkpoints/phase1" \
-  --ttf_path "fonts/" \
-  --output_dir "data_examples/train_original"
-  
+
+
+"""
+USAGE EXAMPLES:
+
+# Upload with original results.json
+python create_hf_dataset.py \
+  --data_dir "my_dataset/train_original" \
+  --repo_id "username/font-diffusion-generated-data" \
+  --split "train_original" \
+  --private \
+  --token "hf_xxxxx"
+
+# Upload without metadata
 python create_hf_dataset.py \
   --data_dir "my_dataset/train" \
-  --repo_id "HF_USERNAME/font-diffusion-generated-data" \
+  --repo_id "username/font-diffusion-generated-data" \
   --split "train" \
-  --private \
-  --token "HF_TOKEN"""
+  --no-metadata
+
+# Save locally and upload
+python create_hf_dataset.py \
+  --data_dir "my_dataset/train" \
+  --repo_id "username/font-diffusion-generated-data" \
+  --split "train" \
+  --local-save "exported_dataset/"
+
+# Upload multiple splits
+python create_hf_dataset.py --data_dir "my_dataset/train_original" --repo_id "username/font-diffusion-generated-data" --split "train_original" --token "hf_xxxxx"
+
+python create_hf_dataset.py --data_dir "my_dataset/train" --repo_id "username/font-diffusion-generated-data" --split "train" --token "hf_xxxxx"
+
+python create_hf_dataset.py --data_dir "my_dataset/val" --repo_id "username/font-diffusion-generated-data" --split "val" --token "hf_xxxxx"
+"""
