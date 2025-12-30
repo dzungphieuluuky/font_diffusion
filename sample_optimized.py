@@ -376,6 +376,18 @@ def image_process(
 
     return content_image_tensor, style_image_tensor, content_image_pil
 
+def load_state_dict_auto(path: str):
+    """
+    Load a state_dict from .pth or .safetensors file automatically.
+    """
+    if path.endswith(".safetensors"):
+        try:
+            from safetensors.torch import load_file as safe_load_file
+        except ImportError:
+            raise ImportError("Please install safetensors to load .safetensors files.")
+        return safe_load_file(path)
+    else:
+        return torch.load(path, map_location='cpu')
 
 def load_fontdiffuser_pipeline(args: Namespace) -> FontDiffuserDPMPipeline:
     """
@@ -386,14 +398,17 @@ def load_fontdiffuser_pipeline(args: Namespace) -> FontDiffuserDPMPipeline:
     
     # Load the model state_dict (original architecture preserved)
     unet: Any = build_unet(args=args)
-    unet.load_state_dict(torch.load(f"{args.ckpt_dir}/unet.pth", map_location='cpu'))
-    
+    unet_ckpt_path = f"{args.ckpt_dir}/unet.safetensors" if os.path.exists(f"{args.ckpt_dir}/unet.safetensors") else f"{args.ckpt_dir}/unet.pth"
+    unet.load_state_dict(load_state_dict_auto(unet_ckpt_path))
+
     style_encoder: Any = build_style_encoder(args=args)
-    style_encoder.load_state_dict(torch.load(f"{args.ckpt_dir}/style_encoder.pth", map_location='cpu'))
-    
+    style_encoder_ckpt_path = f"{args.ckpt_dir}/style_encoder.safetensors" if os.path.exists(f"{args.ckpt_dir}/style_encoder.safetensors") else f"{args.ckpt_dir}/style_encoder.pth"
+    style_encoder.load_state_dict(load_state_dict_auto(style_encoder_ckpt_path))
+
     content_encoder: Any = build_content_encoder(args=args)
-    content_encoder.load_state_dict(torch.load(f"{args.ckpt_dir}/content_encoder.pth", map_location='cpu'))
-    
+    content_encoder_ckpt_path = f"{args.ckpt_dir}/content_encoder.safetensors" if os.path.exists(f"{args.ckpt_dir}/content_encoder.safetensors") else f"{args.ckpt_dir}/content_encoder.pth"
+    content_encoder.load_state_dict(load_state_dict_auto(content_encoder_ckpt_path))
+
     print("✓ Loaded model state_dict successfully")
     
     # SAFE: Apply FP16 conversion AFTER loading weights
