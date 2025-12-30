@@ -101,6 +101,10 @@ def save_checkpoint(model, accelerator, args, global_step, is_best=False):
 def main():
     args = get_args()
 
+    # Add missing arguments with defaults
+    if not hasattr(args, 'val_interval'):
+        args.val_interval = 500  # Validate every 500 steps
+
     # ===== Validation: Check checkpoint interval vs max_train_steps =====
     if args.ckpt_interval > args.max_train_steps:
         raise ValueError(
