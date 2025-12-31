@@ -128,11 +128,11 @@ class ValidationSplitCreator:
 
         # ✅ Scan all style directories
         print("\n🔍 Scanning target images...")
-        for style_folder in tqdm(sorted(target_dir.iterdir()), desc="Styles", unit="style"):
+        for style_folder in tqdm(sorted(target_dir.iterdir()), desc="Styles", unit="style", ncols=100):
             if not style_folder.is_dir():
                 continue
 
-            style_name = style_folder.name
+            style_name = style_folder.name  # The actual style name from folder
             styles.add(style_name)
 
             # Scan images with hash-based naming: U+XXXX_char_style_hash.png
@@ -145,37 +145,50 @@ class ValidationSplitCreator:
                     continue
                 
                 try:
+                    # ✅ FIX: Since style names can contain underscores, we need a smarter approach
+                    # Expected formats:
+                    # 1. U+XXXX_char_style_hash (with safe char)
+                    # 2. U+XXXX_style_hash (without safe char)
+                    
+                    # The hash is always last (8 hex characters)
                     parts = filename.split("_")
                     
-                    # Expected formats:
-                    # 1. U+XXXX_char_style_hash (4 parts) - with safe char
-                    # 2. U+XXXX_style_hash (3 parts) - without safe char
-                    
-                    if len(parts) >= 4:
-                        # Format: U+4E00_中_style0_hash
-                        codepoint = parts[0]  # U+4E00
-                        char_part = parts[1]   # 中 (safe char)
-                        style_part = parts[2]  # style0
-                        
-                    elif len(parts) == 3:
-                        # Format: U+0009_style0_hash (no safe char for unprintable)
-                        codepoint = parts[0]   # U+0009
-                        style_part = parts[1]  # style0
-                        
-                        # Decode character from codepoint
-                        try:
-                            char_code = int(codepoint.replace("U+", ""), 16)
-                            char_part = chr(char_code)
-                        except (ValueError, OverflowError):
-                            continue
-                            
-                    else:
-                        # Invalid format
+                    if len(parts) < 3:
+                        # Invalid format (need at least: codepoint, style_or_char, hash)
                         continue
                     
-                    # Validate that style_part matches folder name
+                    # Extract components
+                    codepoint = parts[0]  # U+XXXX
+                    hash_val = parts[-1]   # Last part is always hash
+                    
+                    # Validate codepoint format
+                    if not codepoint.startswith("U+"):
+                        continue
+                    
+                    # Decode character from codepoint
+                    try:
+                        char_code = int(codepoint.replace("U+", ""), 16)
+                        char_part = chr(char_code)
+                    except (ValueError, OverflowError):
+                        tqdm.write(f"  ⚠️  Invalid codepoint: {codepoint} in {filename}")
+                        continue
+                    
+                    # Now determine if there's a safe char in the filename
+                    # Strategy: Check if parts[1] matches the expected safe char
+                    safe_char_expected = char_part if char_part.isprintable() and char_part not in '<>:"/\\|?*' else ""
+                    
+                    if len(parts) >= 4 and parts[1] == safe_char_expected:
+                        # Format: U+XXXX_char_style_hash
+                        # Style is everything between char and hash (parts[2:-1])
+                        style_part = "_".join(parts[2:-1])
+                    else:
+                        # Format: U+XXXX_style_hash (no safe char)
+                        # Style is everything between codepoint and hash (parts[1:-1])
+                        style_part = "_".join(parts[1:-1])
+                    
+                    # ✅ Validate that extracted style matches folder name
                     if style_part != style_name:
-                        tqdm.write(f"  ⚠️  Style mismatch: {filename} in {style_name}/")
+                        tqdm.write(f"  ⚠️  Style mismatch: extracted '{style_part}' != folder '{style_name}' in {filename}")
                         continue
                     
                     # Add to collections
@@ -201,7 +214,7 @@ class ValidationSplitCreator:
         missing_content = []
         found_content = 0
         
-        for char in tqdm(chars_list, desc="Checking content", unit="char"):
+        for char in tqdm(chars_list, desc="Checking content", unit="char", ncols=100):
             # Use hash-based content filename
             content_filename = get_content_filename(char, font="")
             content_path = content_dir / content_filename
