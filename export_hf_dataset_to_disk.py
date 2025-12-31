@@ -60,7 +60,6 @@ class DatasetExporter:
                 dataset = load_dataset(
                     self.config.repo_id,
                     split=self.config.split,
-                    trust_remote_code=True,
                     token=self.config.token
                 )
                 print(f"✓ Loaded dataset with {len(dataset)} samples from Hub")
