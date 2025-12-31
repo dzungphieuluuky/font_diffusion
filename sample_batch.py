@@ -1043,8 +1043,9 @@ def sampling_batch_optimized(
                 desc=f"  🎨 Inferencing",
                 ncols=100,
                 unit="batch",
+                ascii=True,
                 leave=False,
-                bar_format="  {desc}: {n_fmt}/{total_fmt} |{bar}| [{elapsed}<{remaining}]",
+                bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} {postfix[0]} [{elapsed}<{remaining}, {rate_fmt}{postfix[1]}]",
                 colour="blue",
                 position=2,
             )
