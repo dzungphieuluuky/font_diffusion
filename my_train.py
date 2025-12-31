@@ -430,7 +430,19 @@ def main():
 
     # Initialize trackers and save config
     if accelerator.is_main_process:
-        accelerator.init_trackers(args.experience_name)
+        accelerator.init_trackers(
+            args.experience_name,
+            config={
+                "max_train_steps": args.max_train_steps,
+                "train_batch_size": args.train_batch_size,
+                "learning_rate": args.learning_rate,
+                "perceptual_coefficient": args.perceptual_coefficient,
+                "offset_coefficient": args.offset_coefficient,
+                "sc_coefficient": args.sc_coefficient if args.phase_2 else 0,
+                "phase_2": args.phase_2,
+                "seed": args.seed,
+            }
+        )
         save_args_to_yaml(args=args, output_file=f"{args.output_dir}/{args.experience_name}_config.yaml")
 
     # Setup progress bar
@@ -450,7 +462,13 @@ def main():
                 f"Checkpoint interval: {args.ckpt_interval}")
 
     for epoch in range(num_train_epochs):
-        train_loss = 0.0
+        epoch_train_loss = 0.0
+        epoch_diff_loss = 0.0
+        epoch_percep_loss = 0.0
+        epoch_offset_loss = 0.0
+        epoch_sc_loss = 0.0
+        epoch_steps = 0
+        
         for step, samples in enumerate(train_dataloader):
             model.train()
             content_images = samples["content_image"]
@@ -485,11 +503,15 @@ def main():
                     content_images=content_images,
                     content_encoder_downsample_size=args.content_encoder_downsample_size)
                 
-                # Calculate diffusion loss
+                # ============================================================================
+                # ✅ CALCULATE INDIVIDUAL LOSSES (for logging)
+                # ============================================================================
+                
+                # Diffusion loss
                 diff_loss = F.mse_loss(noise_pred.float(), noise.float(), reduction="mean")
                 offset_loss = offset_out_sum / 2
                 
-                # Calculate perceptual loss
+                # Perceptual loss
                 pred_original_sample_norm = x0_from_epsilon(
                     scheduler=noise_scheduler,
                     noise_pred=noise_pred,
@@ -503,7 +525,7 @@ def main():
                     target_images=norm_target_ori,
                     device=target_images.device)
                 
-                # Dynamic loss coefficient scheduling (focus on diff_loss early, perceptual late)
+                # Dynamic loss coefficient scheduling
                 progress_ratio = global_step / args.max_train_steps
                 if progress_ratio < 0.5:
                     percep_coeff = args.perceptual_coefficient * (progress_ratio / 0.5)
@@ -515,7 +537,11 @@ def main():
                         percep_coeff * percep_loss + \
                         args.offset_coefficient * offset_loss
                 
-                # Phase 2: Add style-content contrastive loss
+                # ============================================================================
+                # Phase 2: Style-content contrastive loss
+                # ============================================================================
+                sc_loss_value = 0.0  # Initialize for logging
+                
                 if args.phase_2 and scr is not None:
                     neg_images = samples["neg_images"]
                     sample_style_embeddings, pos_style_embeddings, neg_style_embeddings = scr(
@@ -523,30 +549,62 @@ def main():
                         target_images, 
                         neg_images, 
                         nce_layers=args.nce_layers)
-                    sc_loss = scr.calculate_nce_loss(
+                    sc_loss_value = scr.calculate_nce_loss(
                         sample_s=sample_style_embeddings,
                         pos_s=pos_style_embeddings,
                         neg_s=neg_style_embeddings)
-                    loss += args.sc_coefficient * sc_loss
+                    loss += args.sc_coefficient * sc_loss_value
 
                 # Gather losses for logging
                 avg_loss = accelerator.gather(loss.repeat(args.train_batch_size)).mean()
-                train_loss += avg_loss.item() / args.gradient_accumulation_steps
+                avg_diff_loss = accelerator.gather(diff_loss.repeat(args.train_batch_size)).mean()
+                avg_percep_loss = accelerator.gather(percep_loss.repeat(args.train_batch_size)).mean()
+                avg_offset_loss = accelerator.gather(offset_loss.repeat(args.train_batch_size)).mean()
+                
+                epoch_train_loss += avg_loss.item() / args.gradient_accumulation_steps
+                epoch_diff_loss += avg_diff_loss.item() / args.gradient_accumulation_steps
+                epoch_percep_loss += avg_percep_loss.item() / args.gradient_accumulation_steps
+                epoch_offset_loss += avg_offset_loss.item() / args.gradient_accumulation_steps
+                
+                if args.phase_2 and scr is not None:
+                    avg_sc_loss = accelerator.gather(sc_loss_value.repeat(args.train_batch_size)).mean()
+                    epoch_sc_loss += avg_sc_loss.item() / args.gradient_accumulation_steps
 
                 # Backpropagation
                 accelerator.backward(loss)
                 if accelerator.sync_gradients:
-                    accelerator.clip_grad_norm_(model.parameters(), args.max_grad_norm)
+                    # ✅ Log gradient norm
+                    grad_norm = accelerator.clip_grad_norm_(model.parameters(), args.max_grad_norm)
                 optimizer.step()
                 lr_scheduler.step()
                 optimizer.zero_grad()
 
-            # Update progress after optimization step
+            # ============================================================================
+            # ✅ LOGGING TO W&B
+            # ============================================================================
+            
             if accelerator.sync_gradients:
                 progress_bar.update(1)
                 global_step += 1
-                accelerator.log({"train_loss": train_loss}, step=global_step)
-                train_loss = 0.0
+                epoch_steps += 1
+                
+                # Log to W&B at every step
+                if accelerator.is_main_process:
+                    wandb_logs = {
+                        "train/total_loss": epoch_train_loss / epoch_steps,
+                        "train/diff_loss": epoch_diff_loss / epoch_steps,
+                        "train/perceptual_loss": epoch_percep_loss / epoch_steps,
+                        "train/offset_loss": epoch_offset_loss / epoch_steps,
+                        "train/learning_rate": lr_scheduler.get_last_lr()[0],
+                        "train/gradient_norm": grad_norm.item() if isinstance(grad_norm, torch.Tensor) else grad_norm,
+                        "epoch": epoch,
+                    }
+                    
+                    # Add Phase 2 loss if applicable
+                    if args.phase_2 and scr is not None:
+                        wandb_logs["train/sc_loss"] = epoch_sc_loss / epoch_steps
+                    
+                    accelerator.log(wandb_logs, step=global_step)
 
                 if accelerator.is_main_process:
                     # Save checkpoint at intervals
@@ -557,18 +615,38 @@ def main():
                     if global_step % args.val_interval == 0:
                         val_loss = validate(model, val_dataloader, noise_scheduler, 
                                           accelerator, args, global_step)
-                        accelerator.log({"val_loss": val_loss}, step=global_step)
+                        
+                        # ✅ Log validation loss and metrics
+                        val_logs = {
+                            "val/loss": val_loss,
+                        }
+                        accelerator.log(val_logs, step=global_step)
+                        
                         logging.info(f"Global Step {global_step} => val_loss = {val_loss:.6f}")
                         
                         if val_loss < best_val_loss:
                             best_val_loss = val_loss
                             save_checkpoint(model, accelerator, args, global_step, is_best=True)
                             logging.info(f"New best model saved with val_loss = {best_val_loss:.6f}")
+                            
+                            # Log best model update
+                            accelerator.log({"val/best_loss": best_val_loss}, step=global_step)
 
-            logs = {"step_loss": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
+            # Progress bar update
+            logs = {
+                "step_loss": loss.detach().item(),
+                "lr": lr_scheduler.get_last_lr()[0],
+                "epoch": epoch
+            }
+            
             if global_step % args.log_interval == 0:
                 logging.info(f"[{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())}] "
-                           f"Global Step {global_step} => train_loss = {loss:.6f}")
+                           f"Global Step {global_step} => "
+                           f"total_loss = {epoch_train_loss/epoch_steps:.6f}, "
+                           f"diff_loss = {epoch_diff_loss/epoch_steps:.6f}, "
+                           f"percep_loss = {epoch_percep_loss/epoch_steps:.6f}, "
+                           f"offset_loss = {epoch_offset_loss/epoch_steps:.6f}")
+            
             progress_bar.set_postfix(**logs)
             
             # Exit if max steps reached
