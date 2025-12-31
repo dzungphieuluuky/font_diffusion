@@ -295,7 +295,7 @@ class QualityEvaluator:
                 self.transform_to_tensor(img2).unsqueeze(0).to(self.device) * 2 - 1
             )
 
-            with torch.no_grad():
+            with torch.inference_mode():
                 lpips_value: float = self.lpips_fn(img1_tensor, img2_tensor).item()
 
             return lpips_value
@@ -943,7 +943,7 @@ def sampling_batch_optimized(
             len(content_images), 1, 1, 1
         )
 
-        with torch.no_grad():
+        with torch.inference_mode():
             dtype: torch.dtype = torch.float16 if args.fp16 else torch.float32
             content_batch = content_batch.to(args.device, dtype=dtype)
             style_batch = style_batch.to(args.device, dtype=dtype)
