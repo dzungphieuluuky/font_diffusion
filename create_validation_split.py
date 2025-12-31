@@ -58,15 +58,19 @@ def detect_font_parameter(content_dir: Path, sample_chars: List[str]) -> str:
     """
     print("\n🔍 Auto-detecting font parameter from existing files...")
     
-    # Common font parameter values to test
-    candidate_fonts = [
-        "",
-        "default",
-        "NotoSerifCJKsc-Regular",
-        "NotoSansCJKsc-Regular",
-        "Arial",
-        "SimSun",
-    ]
+    # ✅ Get fonts from fonts/ directory
+    fonts_dir = Path(__file__).parent / "fonts"
+    candidate_fonts = ["", "default"]  # Start with empty and default
+    
+    if fonts_dir.exists() and fonts_dir.is_dir():
+        # Add all .ttf and .otf files (without extension)
+        for font_file in fonts_dir.glob("*.[to][tf][f]"):  # Matches .ttf and .otf
+            font_name = font_file.stem  # Filename without extension
+            candidate_fonts.append(font_name)
+        
+        print(f"  📂 Found {len(candidate_fonts) - 2} fonts in fonts/ directory")
+    else:
+        print(f"  ⚠️  fonts/ directory not found, using defaults only")
     
     # Try to find a match using sample characters
     for test_char in sample_chars[:5]:  # Test with first 5 chars
@@ -105,11 +109,16 @@ def detect_font_parameter(content_dir: Path, sample_chars: List[str]) -> str:
     for f in example_files:
         print(f"    {f.name}")
     
+    print(f"\n  Available candidate fonts tried:")
+    for cf in candidate_fonts[:10]:
+        print(f"    '{cf}'")
+    if len(candidate_fonts) > 10:
+        print(f"    ... and {len(candidate_fonts) - 10} more")
+    
     print(f"\n  Please check the hash generation in your sample script.")
     print(f"  Defaulting to empty string ('')")
     
     return ""
-
 
 @dataclass
 class ValidationSplitConfig:
