@@ -453,6 +453,30 @@ def load_fontdiffuser_pipeline(args: Namespace) -> FontDiffuserDPMPipeline:
     )
     print("✓ Loaded DPM-Solver pipeline successfully")
 
+    # ✅ ADD: Apply torch.compile to pipe object if requested
+    if getattr(args, 'compile', False):
+        print("\n" + "="*60)
+        print("Compiling pipeline with torch.compile...")
+        print("="*60)
+        try:
+            # Compile the entire pipeline
+            pipe = torch.compile(
+                pipe,
+                mode='reduce-overhead',  # Best for inference
+                dynamic=False,           # Static shapes for better optimization
+                fullgraph=True           # Compile entire graph
+            )
+            print("✓ Pipeline compiled successfully!")
+            print("  Mode: reduce-overhead")
+            print("  Dynamic: False (static shapes)")
+            print("  FullGraph: True")
+            print("="*60)
+            
+        except Exception as e:
+            print(f"⚠️  Warning: torch.compile failed: {e}")
+            print("  Continuing without compilation...")
+            print("  Note: torch.compile requires PyTorch 2.0+ and may not work with all models")
+    
     return pipe
 
 
@@ -654,6 +678,7 @@ def main() -> None:
     print(f"Device: {args.device}")
     print(f"FP16: {getattr(args, 'fp16', False)}")
     print(f"Channels Last: {getattr(args, 'channels_last', False)}")
+    print(f"Compile: {getattr(args, 'compile', False)}")  # ✅ ADD THIS
     print(f"Batch Size: {getattr(args, 'batch_size', 1)}")
     print("="*60 + "\n")
     
