@@ -1045,7 +1045,7 @@ def sampling_batch_optimized(
                 unit="batch",
                 leave=False,
                 bar_format="  {desc}: {n_fmt}/{total_fmt} |{bar}| [{elapsed}<{remaining}]",
-                colour="yellow",
+                colour="blue",
                 position=2,
             )
             for batch_idx, i in enumerate(batch_pbar):
