@@ -15,18 +15,18 @@ FontDiffuser is a neural network-based font style transfer and generation toolki
 
 1. **Clone the repository:**
    ```bash
-   git clone https://github.com/yourusername/font_diffusion.git
-   cd font_diffusion
+   git clone https://github.com/dzungphieuluuky/FontDiffusion.git
+   cd FontDiffusion
    ```
 
 2. **Install dependencies:**
    ```bash
-   pip install -r requirements.txt
+   uv pip install -r requirements.txt
    ```
 
 3. **(Optional) Install xformers for memory-efficient attention:**
    ```bash
-   pip install xformers
+   uv pip install xformers
    ```
 
 ## Usage

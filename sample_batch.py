@@ -502,16 +502,24 @@ def load_characters(
             f"Loading characters from lines {start_line} to {end_idx} (total: {len(all_lines)} lines)"
         )
 
-        for line_num, line in enumerate(all_lines[start_idx:end_idx], start=start_line):
+        # ✅ ADD TQDM HERE
+        for line_num, line in tqdm(
+            enumerate(all_lines[start_idx:end_idx], start=start_line),
+            total=(end_idx - start_idx),
+            desc="📖 Reading character file",
+            ncols=80,
+            unit="line",
+        ):
             char: str = line.strip()
             if not char:
                 continue
             if len(char) != 1:
-                print(
+                tqdm.write(
                     f"Warning: Skipping line {line_num}: expected 1 char, got {len(char)}: '{char}'"
                 )
                 continue
             chars.append(char)
+
     else:
         for c in [x.strip() for x in characters_arg.split(",") if x.strip()]:
             if len(c) != 1:
@@ -535,10 +543,20 @@ def load_style_images(style_images_arg: str) -> List[str]:
             if os.path.splitext(f)[1].lower() in image_exts
         ]
         style_paths.sort()
+
+        # ✅ ADD TQDM FOR STYLE IMAGE VERIFICATION
+        print(f"\n📂 Loading {len(style_paths)} style images from directory...")
+        verified_paths = []
+        for path in tqdm(
+            style_paths, desc="✓ Verifying style images", ncols=80, unit="image"
+        ):
+            if os.path.isfile(path):
+                verified_paths.append(path)
+
+        return verified_paths
     else:
         style_paths: List[str] = [p.strip() for p in style_images_arg.split(",")]
-
-    return style_paths
+        return style_paths
 
 
 def create_args_namespace(args: Namespace) -> Namespace:
@@ -839,10 +857,12 @@ def batch_generate_images(
     print(f"\n{'=' * 70}")
     print(f"{'BATCH IMAGE GENERATION':^70}")
     print("=" * 70)
-    print(f"Fonts:              {len(font_manager.get_font_names())}")
+    print(f"Font Number:              {len(font_manager.get_font_names())}")
+    print(f"Font Names:            {', '.join(font_manager.get_font_names())}")
     print(f"Styles:             {len(style_paths)}")
     print(f"Characters:         {len(characters)}")
     print(f"Batch size:         {args.batch_size}")
+    print(f"Guidance scale:     {args.guidance_scale}")
     print(f"Inference steps:    {args.num_inference_steps}")
     print(
         f"Save interval:      Every {args.save_interval} styles"
@@ -972,7 +992,7 @@ def generate_content_images(
     font_manager: FontManager,
     output_dir: str,
     args: Namespace,
-    index_manager: Optional[ResultsIndexManager] = None,  # ✅ Accept existing manager
+    index_manager: Optional[ResultsIndexManager] = None,
 ) -> Tuple[Dict[str, str], ResultsIndexManager]:
     """
     Generate and save content character images
@@ -998,7 +1018,10 @@ def generate_content_images(
     char_paths: Dict[str, str] = {}
     chars_without_fonts: List[str] = []
 
-    for char in tqdm(characters, desc="📝 Content images", ncols=80):
+    # ✅ ADD TQDM HERE
+    for char in tqdm(
+        characters, desc="📝 Generating content images", ncols=100, unit="char"
+    ):
         found_font = None
         for font_name in font_names:
             if font_manager.is_char_in_font(font_name, char):
@@ -1013,7 +1036,7 @@ def generate_content_images(
         try:
             font = font_manager.get_font(found_font)
             content_img: Image.Image = ttf2im(font=font, char=char)
-            char_idx = index_manager.get_char_index(char)  # ✅ Use consistent index
+            char_idx = index_manager.get_char_index(char)
             char_path: str = os.path.join(content_dir, f"char{char_idx}.png")
             content_img.save(char_path)
             char_paths[char] = char_path
@@ -1025,7 +1048,7 @@ def generate_content_images(
         print(f"⚠ {len(chars_without_fonts)} characters not found in any font")
     print("=" * 60)
 
-    return char_paths, index_manager  # ✅ Return updated manager
+    return char_paths, index_manager
 
 
 def sampling_batch_optimized(
@@ -1063,13 +1086,20 @@ def sampling_batch_optimized(
         content_images: List[torch.Tensor] = []
         content_images_pil: List[Image.Image] = []
 
-        for char in available_chars:
+        # ✅ ADD TQDM FOR CONTENT IMAGE PREPARATION
+        for char in tqdm(
+            available_chars,
+            desc=f"  📝 Preparing {font_name}",
+            ncols=80,
+            unit="char",
+            leave=False,
+        ):
             try:
                 content_image: Image.Image = ttf2im(font=font, char=char)
                 content_images_pil.append(content_image.copy())
                 content_images.append(content_transform(content_image))
             except Exception as e:
-                print(f"    ✗ Error processing '{char}': {e}")
+                tqdm.write(f"    ✗ Error processing '{char}': {e}")
                 continue
 
         if not content_images:
@@ -1092,7 +1122,17 @@ def sampling_batch_optimized(
             all_images: List[Image.Image] = []
             batch_size: int = args.batch_size
 
-            for i in range(0, len(content_batch), batch_size):
+            # ✅ ADD TQDM FOR BATCH INFERENCE
+            num_batches = (len(content_batch) + batch_size - 1) // batch_size
+            batch_pbar = tqdm(
+                range(0, len(content_batch), batch_size),
+                desc=f"  🎨 Inferencing",
+                ncols=80,
+                unit="batch",
+                leave=False,
+            )
+
+            for batch_idx, i in enumerate(batch_pbar):
                 batch_content: torch.Tensor = content_batch[i : i + batch_size]
                 batch_style: torch.Tensor = style_batch[i : i + batch_size]
 
@@ -1113,6 +1153,7 @@ def sampling_batch_optimized(
                 )
 
                 all_images.extend(images)
+                batch_pbar.update(1)
 
             end: float = time.perf_counter()
             total_time: float = end - start
@@ -1120,7 +1161,7 @@ def sampling_batch_optimized(
             return all_images, available_chars, total_time
 
     except Exception as e:
-        print(f"    ✗ Error in batch sampling: {e}")
+        tqdm.write(f"    ✗ Error in batch sampling: {e}")
         import traceback
 
         traceback.print_exc()
@@ -1237,7 +1278,14 @@ def evaluate_results(
     if ground_truth_dir and os.path.isdir(ground_truth_dir):
         print(f"\nComputing LPIPS and SSIM against ground truth...")
 
-        eval_iterator = tqdm(results["generations"], desc="📊 Evaluating", ncols=80)
+        # ✅ ALREADY HAS TQDM - Enhanced with more info
+        eval_iterator = tqdm(
+            results["generations"],
+            desc="📊 Evaluating images",  # ✅ BETTER DESC
+            ncols=100,  # ✅ WIDER
+            unit="image",  # ✅ UNIT
+            colour="green",  # ✅ COLOR
+        )
 
         for gen_info in eval_iterator:
             char: str = gen_info["character"]
@@ -1299,11 +1347,14 @@ def evaluate_results(
         fake_dirs = set(
             os.path.dirname(g["output_path"]) for g in results["generations"]
         )
+
+        # ✅ ADD TQDM FOR FID COMPUTATION
         fid_scores: List[float] = []
-        for fake_dir in fake_dirs:
+        for fake_dir in tqdm(fake_dirs, desc="🎯 Computing FID", ncols=80, unit="dir"):
             fid_val: float = evaluator.compute_fid(ground_truth_dir, fake_dir)
             if fid_val >= 0:
                 fid_scores.append(fid_val)
+
         if fid_scores:
             results["metrics"]["fid"] = {
                 "mean": float(np.mean(fid_scores)),
@@ -1439,9 +1490,12 @@ def main() -> None:
     print("=" * 60)
 
     try:
+        # ✅ ADD TQDM FOR CHARACTER LOADING
         characters: List[str] = load_characters(
             args.characters, args.start_line, args.end_line
         )
+
+        # ✅ ADD TQDM FOR STYLE LOADING
         style_paths: List[str] = load_style_images(args.style_images)
 
         print(f"\nInitializing font manager...")
@@ -1477,7 +1531,7 @@ def main() -> None:
             else None
         )
 
-        # Generate content images
+        # Generate content images (ALREADY HAS TQDM)
         if not resume_results:
             char_paths: Dict[str, str]
             char_paths, index_manager = generate_content_images(
@@ -1492,7 +1546,7 @@ def main() -> None:
 
         evaluator: QualityEvaluator = QualityEvaluator(device=args.device)
 
-        # Generate target images
+        # Generate target images (ALREADY HAS TQDM)
         results: Dict[str, Any] = batch_generate_images(
             pipe,
             characters,
@@ -1505,7 +1559,7 @@ def main() -> None:
             index_manager,
         )
 
-        # Evaluate if requested
+        # Evaluate if requested (ENHANCED TQDM)
         if args.evaluate and args.ground_truth_dir:
             results = evaluate_results(
                 results, evaluator, args.ground_truth_dir, args.compute_fid
