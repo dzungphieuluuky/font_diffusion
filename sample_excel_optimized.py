@@ -26,7 +26,9 @@ from font_manager import FontManager
 # ----------------------------------------------------------------------
 # Logging Configuration
 # ----------------------------------------------------------------------
-def setup_logging(log_level: str = "INFO", log_file: Optional[str] = None) -> logging.Logger:
+def setup_logging(
+    log_level: str = "INFO", log_file: Optional[str] = None
+) -> logging.Logger:
     """
     Configure structured logging for the application.
 
@@ -67,7 +69,9 @@ class FontDiffuserStandardLayoutGenerator:
     Generates FontDiffuser training data in the standard directory layout.
     """
 
-    def __init__(self, args: argparse.Namespace, pipe: torch.nn.Module, font_manager: FontManager):
+    def __init__(
+        self, args: argparse.Namespace, pipe: torch.nn.Module, font_manager: FontManager
+    ):
         """
         Initialize the generator.
 
@@ -81,16 +85,26 @@ class FontDiffuserStandardLayoutGenerator:
         self.logger = logging.getLogger("FontDiffuserStandard")
 
         # Transforms (cached via sample_optimized)
-        self.content_transform = transforms.Compose([
-            transforms.Resize(args.content_image_size, interpolation=transforms.InterpolationMode.BILINEAR),
-            transforms.ToTensor(),
-            transforms.Normalize([0.5], [0.5]),
-        ])
-        self.style_transform = transforms.Compose([
-            transforms.Resize(args.style_image_size, interpolation=transforms.InterpolationMode.BILINEAR),
-            transforms.ToTensor(),
-            transforms.Normalize([0.5], [0.5]),
-        ])
+        self.content_transform = transforms.Compose(
+            [
+                transforms.Resize(
+                    args.content_image_size,
+                    interpolation=transforms.InterpolationMode.BILINEAR,
+                ),
+                transforms.ToTensor(),
+                transforms.Normalize([0.5], [0.5]),
+            ]
+        )
+        self.style_transform = transforms.Compose(
+            [
+                transforms.Resize(
+                    args.style_image_size,
+                    interpolation=transforms.InterpolationMode.BILINEAR,
+                ),
+                transforms.ToTensor(),
+                transforms.Normalize([0.5], [0.5]),
+            ]
+        )
 
         # Output directories
         self.base_dir = Path(args.output_base_dir) / "data_examples" / "train"
@@ -196,7 +210,12 @@ class FontDiffuserStandardLayoutGenerator:
             return True
 
         except Exception as e:
-            self.logger.error("Generation failed for char '%s' with style '%s': %s", char, style_path, e)
+            self.logger.error(
+                "Generation failed for char '%s' with style '%s': %s",
+                char,
+                style_path,
+                e,
+            )
             self.stats["generation_errors"] += 1
             return False
 
@@ -214,8 +233,16 @@ class FontDiffuserStandardLayoutGenerator:
             similar_str = row.get("Top 20 Similar Characters", "")
             similar_chars = self._parse_similar_chars(similar_str)
 
-            chars = [input_char] + similar_chars if not self.args.skip_input_char else similar_chars
-            self.logger.info("Processing input char '%s' with %d similar chars", input_char, len(similar_chars))
+            chars = (
+                [input_char] + similar_chars
+                if not self.args.skip_input_char
+                else similar_chars
+            )
+            self.logger.info(
+                "Processing input char '%s' with %d similar chars",
+                input_char,
+                len(similar_chars),
+            )
 
             for char in chars:
                 self.logger.debug("Processing character: %s", char)
@@ -225,7 +252,11 @@ class FontDiffuserStandardLayoutGenerator:
 
                 for style_path in style_paths:
                     success = self.generate_target_image(char, style_path)
-                    self.logger.debug("Target for style '%s': %s", style_path, "success" if success else "failed")
+                    self.logger.debug(
+                        "Target for style '%s': %s",
+                        style_path,
+                        "success" if success else "failed",
+                    )
 
         self._save_summary()
 
@@ -236,8 +267,11 @@ class FontDiffuserStandardLayoutGenerator:
         try:
             if isinstance(cell, str) and cell.startswith("["):
                 import ast
+
                 return ast.literal_eval(cell)[:20]
-            return [c.strip() for c in str(cell).strip("[]'\" ").split(",") if c.strip()][:20]
+            return [
+                c.strip() for c in str(cell).strip("[]'\" ").split(",") if c.strip()
+            ][:20]
         except Exception:
             return []
 
@@ -251,7 +285,9 @@ class FontDiffuserStandardLayoutGenerator:
             "statistics": self.stats,
         }
         summary_path = self.base_dir / "generation_summary.json"
-        summary_path.write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8")
+        summary_path.write_text(
+            json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
         self.logger.info("Generation summary saved to %s", summary_path)
 
 
@@ -264,16 +300,38 @@ def parse_args() -> argparse.Namespace:
 
     parser = get_parser()
 
-    parser.add_argument("--excel_file", type=str, required=True, help="Path to Excel file")
-    parser.add_argument("--style_image_path", type=str, action="append", required=True,
-                        help="One or more style reference images (can be repeated)")
-    parser.add_argument("--output_base_dir", type=str, default="fontdiffuser_dataset",
-                        help="Base output directory")
-    parser.add_argument("--font_dir", type=str, required=True, help="Directory with TTF fonts")
-    parser.add_argument("--skip_input_char", action="store_true", help="Skip generating input character")
-    parser.add_argument("--log_level", type=str, default="INFO",
-                        choices=["DEBUG", "INFO", "WARNING", "ERROR"], help="Logging level")
-    parser.add_argument("--log_file", type=str, default=None, help="Optional log file path")
+    parser.add_argument(
+        "--excel_file", type=str, required=True, help="Path to Excel file"
+    )
+    parser.add_argument(
+        "--style_image_path",
+        type=str,
+        action="append",
+        required=True,
+        help="One or more style reference images (can be repeated)",
+    )
+    parser.add_argument(
+        "--output_base_dir",
+        type=str,
+        default="fontdiffuser_dataset",
+        help="Base output directory",
+    )
+    parser.add_argument(
+        "--font_dir", type=str, required=True, help="Directory with TTF fonts"
+    )
+    parser.add_argument(
+        "--skip_input_char", action="store_true", help="Skip generating input character"
+    )
+    parser.add_argument(
+        "--log_level",
+        type=str,
+        default="INFO",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+        help="Logging level",
+    )
+    parser.add_argument(
+        "--log_file", type=str, default=None, help="Optional log file path"
+    )
 
     args = parser.parse_args()
 

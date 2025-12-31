@@ -1,6 +1,7 @@
 import os
 import shutil
 
+
 def flatten_folder(root_dir):
     """
     Moves all files from subdirectories of root_dir into root_dir.
@@ -24,5 +25,6 @@ def flatten_folder(root_dir):
         if subdir != root_dir and not os.listdir(subdir):
             os.rmdir(subdir)
 
+
 if __name__ == "__main__":
-    flatten_folder(r'data\content\nomtutao_output\NomNaTong-Regular')
+    flatten_folder(r"data\content\nomtutao_output\NomNaTong-Regular")

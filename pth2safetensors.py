@@ -48,90 +48,90 @@ Examples:
     --weights_dir "ckpt" \\
     --repo_id "username/font-diffusion-weights" \\
     --skip-conversion
-        """
+        """,
     )
 
     parser.add_argument(
-        '--weights_dir',
+        "--weights_dir",
         type=str,
         required=True,
-        help='Path to directory containing .pth files (default: ckpt)'
+        help="Path to directory containing .pth files (default: ckpt)",
     )
 
     parser.add_argument(
-        '--repo_id',
+        "--repo_id",
         type=str,
         default=None,
-        help='Hugging Face repo ID (e.g., username/font-diffusion-weights). Required if uploading.'
+        help="Hugging Face repo ID (e.g., username/font-diffusion-weights). Required if uploading.",
     )
 
     parser.add_argument(
-        '--token',
+        "--token",
         type=str,
         default=None,
-        help='Hugging Face API token. If not provided, uses HF_TOKEN environment variable.'
+        help="Hugging Face API token. If not provided, uses HF_TOKEN environment variable.",
     )
 
     parser.add_argument(
-        '--files',
-        nargs='+',
+        "--files",
+        nargs="+",
         default=[
             "content_encoder.pth",
             "style_encoder.pth",
             "unet.pth",
             "total_model.pth",
-            "scr.pth"
+            "scr.pth",
         ],
-        help='Specific .pth files to convert (default: all standard FontDiffusion weights)'
+        help="Specific .pth files to convert (default: all standard FontDiffusion weights)",
     )
 
     parser.add_argument(
-        '--private',
-        action='store_true',
+        "--private",
+        action="store_true",
         default=True,
-        help='Make repository private (default: True)'
+        help="Make repository private (default: True)",
     )
 
     parser.add_argument(
-        '--public',
-        action='store_true',
+        "--public",
+        action="store_true",
         default=False,
-        help='Make repository public (overrides --private)'
+        help="Make repository public (overrides --private)",
     )
 
     parser.add_argument(
-        '--no-upload',
-        action='store_true',
+        "--no-upload",
+        action="store_true",
         default=False,
-        help='Convert to safetensors but do not upload to Hub'
+        help="Convert to safetensors but do not upload to Hub",
     )
 
     parser.add_argument(
-        '--skip-conversion',
-        action='store_true',
+        "--skip-conversion",
+        action="store_true",
         default=False,
-        help='Skip conversion, only upload existing .safetensors files'
+        help="Skip conversion, only upload existing .safetensors files",
     )
 
     parser.add_argument(
-        '--commit-message',
+        "--commit-message",
         type=str,
-        default='Add converted safetensors and original pth weights',
-        help='Custom commit message for Hub upload'
+        default="Add converted safetensors and original pth weights",
+        help="Custom commit message for Hub upload",
     )
 
     parser.add_argument(
-        '--weights_only',
-        action='store_true',
+        "--weights_only",
+        action="store_true",
         default=True,
-        help='Use weights_only=True when loading .pth (safer but stricter)'
+        help="Use weights_only=True when loading .pth (safer but stricter)",
     )
 
     parser.add_argument(
-        '--verbose',
-        action='store_true',
+        "--verbose",
+        action="store_true",
         default=False,
-        help='Print detailed information during conversion'
+        help="Print detailed information during conversion",
     )
 
     return parser.parse_args()
@@ -141,38 +141,41 @@ def get_token(token_arg: Optional[str]) -> Optional[str]:
     """Get HF token from argument or environment variable"""
     if token_arg:
         return token_arg
-    
-    token_env = os.getenv('HF_TOKEN')
+
+    token_env = os.getenv("HF_TOKEN")
     if token_env:
         return token_env
-    
+
     try:
         from huggingface_hub import HfFolder
+
         return HfFolder.get_token()
     except Exception:
         pass
-    
+
     return None
 
 
 def validate_inputs(args: argparse.Namespace) -> bool:
     """Validate command-line arguments"""
-    print("\n" + "="*70)
+    print("\n" + "=" * 70)
     print("VALIDATING INPUTS")
-    print("="*70)
+    print("=" * 70)
 
     if not os.path.isdir(args.weights_dir):
         print(f"✗ Error: Weights directory not found: {args.weights_dir}")
         return False
-    
+
     print(f"✓ Weights directory: {args.weights_dir}")
     print(f"  Contents: {len(os.listdir(args.weights_dir))} files")
 
     if not args.no_upload:
         if not args.repo_id:
-            print("✗ Error: --repo_id is required when uploading (use --no-upload to skip)")
+            print(
+                "✗ Error: --repo_id is required when uploading (use --no-upload to skip)"
+            )
             return False
-        
+
         print(f"✓ Repository ID: {args.repo_id}")
 
         token = get_token(args.token)
@@ -183,7 +186,7 @@ def validate_inputs(args: argparse.Namespace) -> bool:
             print("    2. HF_TOKEN environment variable")
             print("    3. huggingface-cli login")
             return False
-        
+
         print(f"✓ HF token: {'*' * 20}")
     else:
         print("⊘ Skipping upload (--no-upload)")
@@ -200,31 +203,29 @@ def validate_inputs(args: argparse.Namespace) -> bool:
     return True
 
 
-def load_pth_file(pth_path: str, weights_only: bool = True, verbose: bool = False) -> Optional[Dict[str, Any]]:
+def load_pth_file(
+    pth_path: str, weights_only: bool = True, verbose: bool = False
+) -> Optional[Dict[str, Any]]:
     """
     Load a .pth file safely
-    
+
     Args:
         pth_path: Path to .pth file
         weights_only: Use weights_only mode (safer)
         verbose: Print debug info
-        
+
     Returns:
         State dict or None if failed
     """
     try:
         if verbose:
             print(f"  Loading: {pth_path}")
-        
-        state_dict = torch.load(
-            pth_path,
-            map_location="cpu",
-            weights_only=weights_only
-        )
-        
+
+        state_dict = torch.load(pth_path, map_location="cpu", weights_only=weights_only)
+
         if verbose:
             print(f"  Type: {type(state_dict)}")
-        
+
         # Unwrap nested state_dict
         if isinstance(state_dict, dict):
             if "state_dict" in state_dict:
@@ -235,9 +236,9 @@ def load_pth_file(pth_path: str, weights_only: bool = True, verbose: bool = Fals
                 if verbose:
                     print(f"  Unwrapping 'model' key...")
                 state_dict = state_dict["model"]
-        
+
         return state_dict if isinstance(state_dict, dict) else None
-        
+
     except Exception as e:
         print(f"  ✗ Failed to load: {e}")
         return None
@@ -249,9 +250,9 @@ def convert_pth_to_safetensors(args: argparse.Namespace) -> bool:
         print("\n⊘ Skipping conversion (--skip-conversion)")
         return True
 
-    print("\n" + "="*70)
+    print("\n" + "=" * 70)
     print("CONVERTING .pth TO SAFETENSORS")
-    print("="*70)
+    print("=" * 70)
 
     converted_count = 0
     failed_count = 0
@@ -266,14 +267,12 @@ def convert_pth_to_safetensors(args: argparse.Namespace) -> bool:
 
         try:
             print(f"\n📦 {file_name}")
-            
+
             # Load weights
             state_dict = load_pth_file(
-                pth_path,
-                weights_only=args.weights_only,
-                verbose=args.verbose
+                pth_path, weights_only=args.weights_only, verbose=args.verbose
             )
-            
+
             if state_dict is None:
                 print(f"  ✗ Error: Failed to load state dict")
                 failed_count += 1
@@ -286,8 +285,7 @@ def convert_pth_to_safetensors(args: argparse.Namespace) -> bool:
 
             if args.verbose:
                 num_params = sum(
-                    v.numel() if hasattr(v, 'numel') else 0
-                    for v in state_dict.values()
+                    v.numel() if hasattr(v, "numel") else 0 for v in state_dict.values()
                 )
                 print(f"  Parameters: {num_params:,}")
 
@@ -299,7 +297,9 @@ def convert_pth_to_safetensors(args: argparse.Namespace) -> bool:
             compression = ((pth_size_mb - safe_size_mb) / pth_size_mb) * 100
 
             print(f"  ✓ Saved to: {safe_path}")
-            print(f"    Original: {pth_size_mb:.2f} MB → Safetensors: {safe_size_mb:.2f} MB")
+            print(
+                f"    Original: {pth_size_mb:.2f} MB → Safetensors: {safe_size_mb:.2f} MB"
+            )
             print(f"    Compression: {compression:.1f}%")
 
             converted_count += 1
@@ -309,11 +309,12 @@ def convert_pth_to_safetensors(args: argparse.Namespace) -> bool:
             failed_count += 1
             if args.verbose:
                 import traceback
+
                 traceback.print_exc()
 
-    print("\n" + "-"*70)
+    print("\n" + "-" * 70)
     print(f"Conversion complete: {converted_count} succeeded, {failed_count} failed")
-    
+
     return failed_count == 0
 
 
@@ -327,9 +328,9 @@ def upload_to_hub(args: argparse.Namespace) -> bool:
         print("\n✗ Error: --repo_id required for upload")
         return False
 
-    print("\n" + "="*70)
+    print("\n" + "=" * 70)
     print("UPLOADING TO HUGGING FACE HUB")
-    print("="*70)
+    print("=" * 70)
 
     try:
         # Get token
@@ -354,7 +355,7 @@ def upload_to_hub(args: argparse.Namespace) -> bool:
             repo_type="model",
             exist_ok=True,
             private=private,
-            token=token
+            token=token,
         )
 
         print(f"✓ Repository ready\n")
@@ -366,35 +367,36 @@ def upload_to_hub(args: argparse.Namespace) -> bool:
             repo_id=args.repo_id,
             repo_type="model",
             token=token,
-            commit_message=args.commit_message
+            commit_message=args.commit_message,
         )
 
         model_url = f"https://huggingface.co/models/{args.repo_id}"
         print(f"\n✓ Upload successful!")
         print(f"  Repository URL: {model_url}")
-        
+
         return True
 
     except Exception as e:
         print(f"\n✗ Upload failed: {e}")
         if args.verbose:
             import traceback
+
             traceback.print_exc()
         return False
 
 
 def main():
     """Main execution function"""
-    print("\n" + "="*70)
+    print("\n" + "=" * 70)
     print("PYTORCH TO SAFETENSORS CONVERTER & HF UPLOADER")
-    print("="*70)
+    print("=" * 70)
 
     args = parse_arguments()
 
     if args.verbose:
         print("\n📋 Arguments:")
         for key, value in vars(args).items():
-            if key == 'token' and value:
+            if key == "token" and value:
                 print(f"  {key}: {'*' * 20}")
             else:
                 print(f"  {key}: {value}")
@@ -412,10 +414,10 @@ def main():
         print("\n✗ Upload failed")
         sys.exit(1)
 
-    print("\n" + "="*70)
+    print("\n" + "=" * 70)
     print("✓ ALL DONE!")
-    print("="*70)
-    
+    print("=" * 70)
+
     if not args.no_upload:
         print(f"\n📦 Your weights are now available at:")
         print(f"   https://huggingface.co/models/{args.repo_id}")
@@ -433,6 +435,7 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"\n\n✗ Fatal error: {e}")
         import traceback
+
         traceback.print_exc()
         sys.exit(1)
 

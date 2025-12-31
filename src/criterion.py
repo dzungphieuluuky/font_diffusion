@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-import torchvision 
+import torchvision
 
 
 class VGG16(nn.Module):
@@ -13,19 +13,18 @@ class VGG16(nn.Module):
         self.enc_3 = nn.Sequential(*vgg16.features[10:17])
 
         for i in range(3):
-            for param in getattr(self, f'enc_{i+1:d}').parameters():
+            for param in getattr(self, f"enc_{i + 1:d}").parameters():
                 param.requires_grad = False
 
     def forward(self, image):
         results = [image]
         for i in range(3):
-            func = getattr(self, f'enc_{i+1:d}')
+            func = getattr(self, f"enc_{i + 1:d}")
             results.append(func(results[-1]))
         return results[1:]
 
 
 class ContentPerceptualLoss(nn.Module):
-
     def __init__(self):
         super().__init__()
         self.VGG = VGG16()
