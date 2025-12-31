@@ -869,7 +869,7 @@ def batch_generate_images(
         if args.save_interval > 0
         else "Save interval:      End only"
     )
-    print(f"Output dir:         {output_dir}")
+    print(f"Output Dir:         {output_dir}")
     print("=" * 70 + "\n")
 
     # Build char-to-font mapping
@@ -1172,8 +1172,8 @@ def _build_char_font_map(
     characters: List[str], font_manager: FontManager
 ) -> Dict[str, str]:
     """Map each character to its first available font"""
-    char_to_font = {}
-    for char in characters:
+    char_to_font: Dict[str, str] = {}
+    for char in tqdm(characters, desc="Mapping chars", unit="char"):
         for font_name in font_manager.get_font_names():
             if font_manager.is_char_in_font(font_name, char):
                 char_to_font[char] = font_name
