@@ -818,8 +818,7 @@ def batch_generate_images(
     index_manager: Optional[ResultsIndexManager] = None,
 ) -> Dict[str, Any]:
     """
-    Generate images in batches.
-    ✅ SIMPLIFIED: Only saves results_checkpoint.json periodically and at end
+    ✅ SIMPLIFIED: Skip char-to-font mapping, use first available font
     """
 
     # Initialize index manager
@@ -834,9 +833,7 @@ def batch_generate_images(
     # Initialize results
     if resume_results:
         results = resume_results
-        print(
-            f"📥 Resuming: {len(index_manager.existing_pairs)} pairs already processed"
-        )
+        print(f"📥 Resuming: {len(index_manager.existing_pairs)} pairs already processed")
     else:
         results = {
             "generations": [],
@@ -857,35 +854,32 @@ def batch_generate_images(
     print(f"\n{'=' * 70}")
     print(f"{'BATCH IMAGE GENERATION':^70}")
     print("=" * 70)
-    print(f"Font Number:              {len(font_manager.get_font_names())}")
-    print(f"Font Names:            {', '.join(font_manager.get_font_names())}")
-    print(f"Styles:             {len(style_paths)}")
-    print(f"Characters:         {len(characters)}")
-    print(f"Batch size:         {args.batch_size}")
-    print(f"Guidance scale:     {args.guidance_scale}")
-    print(f"Inference steps:    {args.num_inference_steps}")
-    print(
-        f"Save interval:      Every {args.save_interval} styles"
-        if args.save_interval > 0
-        else "Save interval:      End only"
-    )
-    print(f"Output Dir:         {output_dir}")
+    print(f"Font Number:          {len(font_manager.get_font_names())}")
+    print(f"Font Names:           {', '.join(font_manager.get_font_names())}")
+    print(f"Styles:               {len(style_paths)}")
+    print(f"Characters:           {len(characters)}")
+    print(f"Batch size:           {args.batch_size}")
+    print(f"Guidance scale:       {args.guidance_scale}")
+    print(f"Inference steps:      {args.num_inference_steps}")
+    print(f"Output Dir:           {output_dir}")
     print("=" * 70 + "\n")
 
-    # Build char-to-font mapping
-    char_to_font = _build_char_font_map(characters, font_manager)
-    chars_without_fonts = [c for c in characters if c not in char_to_font]
-
-    if chars_without_fonts:
-        print(f"⚠️  {len(chars_without_fonts)} characters not in any font (will skip)")
+    # ✅ SKIP MAPPING - Use first font for all characters
+    font_names = font_manager.get_font_names()
+    if not font_names:
+        raise ValueError("No fonts loaded!")
+    
+    primary_font = font_names[0]
+    print(f"Using font: {primary_font}")
+    print("=" * 70 + "\n")
 
     # Initialize counters
     generated_count = 0
     skipped_count = 0
-    failed_count = len(chars_without_fonts)
+    failed_count = 0
     generation_start_time = time.time()
 
-    # Main generation loop
+    # Main generation loop - SIMPLIFIED
     for style_idx, style_path in tqdm(
         enumerate(style_paths),
         total=len(style_paths),
@@ -898,67 +892,56 @@ def batch_generate_images(
         os.makedirs(style_dir, exist_ok=True)
 
         try:
-            # Group characters by font for this style
-            font_to_chars = _group_chars_by_font(
-                characters, char_to_font, index_manager, style_idx_managed
+            # ✅ SKIP MAPPING - Go straight to sampling
+            images, valid_chars, batch_time = sampling_batch_optimized(
+                args, pipe, characters, style_path, font_manager, primary_font
             )
 
-            if not font_to_chars:
+            if images is None:
+                tqdm.write(f"  ⚠️  {style_name}: No images generated")
                 skipped_count += len(characters)
                 continue
 
-            # Generate images for each font
-            for font_name, chars_for_font in font_to_chars.items():
-                images, valid_chars, batch_time = sampling_batch_optimized(
-                    args, pipe, chars_for_font, style_path, font_manager, font_name
-                )
+            tqdm.write(f"  ✓ {style_name}: {len(images)} images in {batch_time:.2f}s")
 
-                if images is None:
-                    tqdm.write(f"  ⚠️  {style_name} ({font_name}): No images generated")
-                    continue
+            # Save images and metadata
+            for char, img in zip(valid_chars, images):
+                char_idx = index_manager.get_char_index(char)
+                img_name = f"{style_name}+char{char_idx}.png"
+                img_path = os.path.join(style_dir, img_name)
 
-                tqdm.write(
-                    f"  ✓ {style_name} ({font_name}): {len(images)} in {batch_time:.2f}s"
-                )
+                evaluator.save_image(img, img_path)
 
-                # Save images and metadata
-                for char, img in zip(valid_chars, images):
-                    char_idx = index_manager.get_char_index(char)
-                    img_name = f"{style_name}+char{char_idx}.png"
-                    img_path = os.path.join(style_dir, img_name)
-
-                    evaluator.save_image(img, img_path)
-
-                    # Add generation record
-                    results["generations"].append(
-                        {
-                            "character": char,
-                            "char_index": char_idx,
-                            "style": style_name,
-                            "style_index": style_idx_managed,
-                            "font": font_name,
-                            "output_path": img_path,
-                            "content_image_path": f"ContentImage/char{char_idx}.png",
-                            "target_image_path": f"TargetImage/{style_name}/{style_name}+char{char_idx}.png",
-                        }
-                    )
-
-                    index_manager.add_pair(char_idx, style_idx_managed)
-                    generated_count += 1
-
-                # Track inference time
-                results["metrics"]["inference_times"].append(
+                # Add generation record
+                results["generations"].append(
                     {
+                        "character": char,
+                        "char_index": char_idx,
                         "style": style_name,
                         "style_index": style_idx_managed,
-                        "font": font_name,
-                        "total_time": batch_time,
-                        "num_images": len(images),
-                        "time_per_image": batch_time / len(images) if images else 0,
+                        "font": primary_font,  # ✅ Use same font for all
+                        "output_path": img_path,
+                        "content_image_path": f"ContentImage/char{char_idx}.png",
+                        "target_image_path": f"TargetImage/{style_name}/{style_name}+char{char_idx}.png",
                     }
                 )
 
-            # ✅ SIMPLIFIED: Only save checkpoint periodically
+                index_manager.add_pair(char_idx, style_idx_managed)
+                generated_count += 1
+
+            # Track inference time
+            results["metrics"]["inference_times"].append(
+                {
+                    "style": style_name,
+                    "style_index": style_idx_managed,
+                    "font": primary_font,
+                    "total_time": batch_time,
+                    "num_images": len(images),
+                    "time_per_image": batch_time / len(images) if images else 0,
+                }
+            )
+
+            # Save checkpoint periodically
             if args.save_interval > 0 and (style_idx + 1) % args.save_interval == 0:
                 _print_checkpoint_status(
                     style_idx + 1,
@@ -972,8 +955,8 @@ def batch_generate_images(
         except Exception as e:
             tqdm.write(f"  ✗ {style_name}: {e}")
             import traceback
-
             traceback.print_exc()
+            failed_count += len(characters)
 
     # Final statistics
     _print_generation_summary(
@@ -985,7 +968,6 @@ def batch_generate_images(
     )
 
     return results
-
 
 def generate_content_images(
     characters: List[str],
