@@ -839,6 +839,7 @@ def batch_generate_images(
     """
     ✅ Main batch generation with hash-based file naming
     Checks generation_tracker to skip already processed combinations
+    ✅ CORRECTED: Accumulates ALL characters and styles across sessions
     """
 
     # Generate ALL content images first
@@ -853,16 +854,33 @@ def batch_generate_images(
     if not char_paths:
         raise ValueError("No content images generated!")
 
+    # ✅ CORRECTED: Extract ALL unique characters and styles from checkpoint
+    all_chars_in_checkpoint: Set[str] = set()
+    all_styles_in_checkpoint: Set[str] = set()
+    
+    for gen in generation_tracker.generations:
+        all_chars_in_checkpoint.add(gen.get("character", ""))
+        all_styles_in_checkpoint.add(gen.get("style", ""))
+    
+    # ✅ Add current session's chars
+    all_chars_in_checkpoint.update(char_paths.keys())
+    
+    # ✅ Add current session's styles (only those that were actually generated)
+    for (style_path, style_name) in style_paths_with_names:
+        # Check if this style has any generations
+        if any(gen.get("style") == style_name for gen in generation_tracker.generations):
+            all_styles_in_checkpoint.add(style_name)
+
     # Initialize results from tracker
     results = {
         "generations": generation_tracker.generations.copy(),
         "metrics": {"lpips": [], "ssim": [], "inference_times": []},
         "dataset_split": args.dataset_split,
         "fonts": font_manager.get_font_names(),
-        "characters": list(char_paths.keys()),
-        "styles": [name for _, name in style_paths_with_names],
-        "total_chars": len(char_paths),
-        "total_styles": len(style_paths_with_names),
+        "characters": sorted(list(all_chars_in_checkpoint)),  # ✅ ALL accumulated chars
+        "styles": sorted(list(all_styles_in_checkpoint)),     # ✅ ONLY generated styles
+        "total_chars": len(all_chars_in_checkpoint),          # ✅ ALL accumulated char count
+        "total_styles": len(all_styles_in_checkpoint),        # ✅ ONLY generated style count
     }
 
     # Setup directories
@@ -875,12 +893,12 @@ def batch_generate_images(
     logging.info("=" * 60)
     logging.info(f"Fonts:                {len(font_manager.get_font_names())}")
     logging.info(f"Styles:               {len(style_paths_with_names)}")
-    logging.info(f"Characters:           {len(characters)}")
+    logging.info(f"Characters (input):   {len(characters)}")
+    logging.info(f"Characters (content): {len(char_paths)}")
     logging.info(f"Batch size:           {args.batch_size}")
-    logging.info(
-        f"Existing generations: {len(generation_tracker.generations)} unique pairs"
-    )
-    logging.info(f"Existing hashes:      {len(generation_tracker.generated_hashes)}")
+    logging.info(f"Previously generated: {len(generation_tracker.generations)} unique pairs")
+    logging.info(f"Unique chars seen:    {len(all_chars_in_checkpoint)}")  # ✅ NEW
+    logging.info(f"Unique styles used:   {len(all_styles_in_checkpoint)}")  # ✅ NEW
     logging.info("=" * 60 + "\n")
 
     # Use first font for all characters
@@ -966,6 +984,15 @@ def batch_generate_images(
 
                 results["generations"].append(generation_record)
                 generation_tracker.add_generation(generation_record)
+                
+                # ✅ Update accumulated chars and styles in results
+                all_chars_in_checkpoint.add(char)
+                all_styles_in_checkpoint.add(style_name)
+                results["characters"] = sorted(list(all_chars_in_checkpoint))
+                results["styles"] = sorted(list(all_styles_in_checkpoint))
+                results["total_chars"] = len(all_chars_in_checkpoint)
+                results["total_styles"] = len(all_styles_in_checkpoint)
+                
                 generated_count += 1
 
             # Track inference time
@@ -1007,7 +1034,6 @@ def batch_generate_images(
     )
 
     return results
-
 
 def sampling_batch_optimized(
     args: Namespace,
