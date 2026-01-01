@@ -1048,7 +1048,7 @@ def sampling_batch_optimized(
                 unit="batch",
                 ascii=True,
                 leave=False,
-                bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} {postfix[0]} [{elapsed}<{remaining}, {rate_fmt}{postfix[1]}]",
+                bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]",  # ✅ Removed postfix references
                 colour="blue",
                 position=2,
             )
