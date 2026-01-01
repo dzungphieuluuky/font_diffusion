@@ -162,7 +162,6 @@ class FontDiffusionDatasetBuilder:
         # ✅ Use standardized tqdm config with total from loop
         for gen in tqdm(
             generations,
-            total=len(generations),
             **get_tqdm_config(
                 total=len(generations),
                 desc="Loading image pairs",
