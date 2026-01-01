@@ -822,9 +822,9 @@ def batch_generate_images(
     """
 
     # Generate ALL content images first
-    logging.info(f"{'=' * 65}")
-    logging.info(f"{'GENERATING CONTENT IMAGES':^65}")
-    logging.info("=" * 65)
+    logging.info(f"{'=' * 60}")
+    logging.info(f"{'GENERATING CONTENT IMAGES':^60}")
+    logging.info("=" * 60)
 
     char_paths = generate_content_images(
         characters, font_manager, output_dir, generation_tracker
@@ -1129,15 +1129,15 @@ def _print_checkpoint_status(
         else 0
     )
 
-    logging.info(f"\n{'=' * 70}")
-    logging.info(f"{'CHECKPOINT':^70}")
-    logging.info("=" * 70)
+    logging.info(f"{'=' * 60}")
+    logging.info(f"{'CHECKPOINT':^60}")
+    logging.info("=" * 60)
     logging.info(f"Progress:           {current_style}/{total_styles} styles")
     logging.info(f"Generated:          {generated} pairs")
     logging.info(f"Skipped:            {skipped} pairs")
     logging.info(f"Elapsed time:       {elapsed / 60:.1f} minutes")
     logging.info(f"Est. remaining:     {remaining / 60:.1f} minutes")
-    logging.info("=" * 70)
+    logging.info("=" * 60)
 
 
 def _print_generation_summary(
