@@ -63,21 +63,21 @@ def get_tqdm_config(
 # Preset configurations for common scenarios
 TQDM_IMAGE_LOADING = {
     "unit": "img",
-    "ncols": 1000,
+    "ncols": 100,
     "unit_scale": True,
-    "unit_divisor": 10000,
+    "unit_divisor": 1000,
 }
 
 TQDM_GENERATION_PAIR = {
     "unit": "pair",
-    "ncols": 1000,
+    "ncols": 100,
     "unit_scale": True,
-    "unit_divisor": 10000,
+    "unit_divisor": 1000,
 }
 
 TQDM_FILE_IO = {
     "unit": "file",
-    "ncols": 1000,
+    "ncols": 100,
     "unit_scale": True,
     "unit_divisor": 1024,  # Binary divisor for file sizes
 }
