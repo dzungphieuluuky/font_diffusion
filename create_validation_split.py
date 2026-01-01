@@ -38,6 +38,10 @@ logging.basicConfig(
 )
 
 
+# ============================================================================
+# UTILITY FUNCTIONS - For filename parsing and hashing
+# ============================================================================
+
 def compute_file_hash(char: str, style: str, font: str = "") -> str:
     """
     Compute deterministic hash for a (character, style, font) combination
@@ -52,37 +56,6 @@ def compute_file_hash(char: str, style: str, font: str = "") -> str:
     """
     content = f"{char}_{style}_{font}"
     return hashlib.sha256(content.encode("utf-8")).hexdigest()[:8]
-
-
-def get_content_filename(char: str, font: str = "") -> str:
-    """
-    Get content image filename for character
-    Format: {unicode_codepoint}_{char}_{hash}.png
-    Example: U+4E00_中_a1b2c3d4.png
-    """
-    codepoint = f"U+{ord(char):04X}"
-    hash_val = compute_file_hash(char, "", font)
-    # Sanitize char for filename (replace problematic characters)
-    safe_char = char if char.isprintable() and char not in '<>:"/\\|?*' else ""
-    if safe_char:
-        return f"{codepoint}_{safe_char}_{hash_val}.png"
-    else:
-        return f"{codepoint}_{hash_val}.png"
-
-
-def get_target_filename(char: str, style: str, font: str = "") -> str:
-    """
-    Get target image filename
-    Format: {unicode_codepoint}_{char}_{style}_{hash}.png
-    Example: U+4E00_中_style0_a1b2c3d4.png
-    """
-    codepoint = f"U+{ord(char):04X}"
-    hash_val = compute_file_hash(char, style, font)
-    safe_char = char if char.isprintable() and char not in '<>:"/\\|?*' else ""
-    if safe_char:
-        return f"{codepoint}_{safe_char}_{style}_{hash_val}.png"
-    else:
-        return f"{codepoint}_{style}_{hash_val}.png"
 
 
 def parse_content_filename(filename: str) -> Optional[str]:
@@ -154,38 +127,11 @@ def parse_target_filename(filename: str) -> Optional[Tuple[str, str]]:
         return None
 
 
-def find_content_image_by_char(
-    content_dir: Path, char: str
-) -> Optional[Path]:
-    """
-    Find content image for a character by scanning directory
-    Matches by codepoint and character, IGNORING hash
-    """
-    codepoint = f"U+{ord(char):04X}"
-    safe_char = char if char.isprintable() and char not in '<>:"/\\|?*' else ""
-    
-    # Look for files matching: U+XXXX_char_*.png
-    for img_file in content_dir.glob("*.png"):
-        parsed_char = parse_content_filename(img_file.name)
-        if parsed_char == char:
-            return img_file
-    
-    return None
+# ⚠️ DELETE: get_content_filename() - UNUSED (file paths are already obtained)
+# ⚠️ DELETE: get_target_filename() - UNUSED (file paths are already obtained)
+# ⚠️ DELETE: find_content_image_by_char() - UNUSED (not called anywhere)
+# ⚠️ DELETE: find_target_image_by_char_style() - UNUSED (not called anywhere)
 
-
-def find_target_image_by_char_style(
-    style_dir: Path, char: str, style: str
-) -> Optional[Path]:
-    """
-    Find target image for (char, style) by scanning directory
-    Matches by codepoint, character, and style, IGNORING hash
-    """
-    for img_file in style_dir.glob("*.png"):
-        parsed = parse_target_filename(img_file.name)
-        if parsed and parsed[0] == char and parsed[1] == style:
-            return img_file
-    
-    return None
 
 @dataclass
 class ValidationSplitConfig:
@@ -196,6 +142,10 @@ class ValidationSplitConfig:
     random_seed: int = 42
 
 
+# ============================================================================
+# MAIN CLASS - ValidationSplitCreator
+# ============================================================================
+
 class ValidationSplitCreator:
     """Create train/val splits with proper checkpoint filtering"""
 
@@ -203,18 +153,18 @@ class ValidationSplitCreator:
         self.config = config
         self.data_root = Path(config.data_root)
 
-        self.original_train_dir : Path = self.data_root / "train_original"
+        self.original_train_dir: Path = self.data_root / "train_original"
         self.train_dir: Path = self.data_root / "train"
         self.val_dir: Path = self.data_root / "val"
 
         random.seed(config.random_seed)
-        self.detected_font : str = ""
+        self.detected_font: str = ""
 
         self._validate_structure()
 
     def _validate_structure(self) -> None:
         """Validate training directory structure"""
-        source_dir : Path = (
+        source_dir: Path = (
             self.original_train_dir
             if self.original_train_dir.exists()
             else self.train_dir
@@ -228,6 +178,173 @@ class ValidationSplitCreator:
         self.source_train_dir: Path = source_dir
         logging.info(f"✓ Using source directory: {self.source_train_dir}")
 
+    def analyze_data(
+        self,
+    ) -> Tuple[Dict[str, str], Dict[Tuple[str, str], str], Dict[str, List[str]]]:
+        """
+        ✅ CORRECTED: Analyze by scanning actual files and matching content↔target pairs
+        ✅ With detailed diagnostics to find missing images
+        
+        Returns:
+            - content_files: {char -> file_path}
+            - target_files: {(char, style) -> file_path}
+            - char_to_styles: {char -> [styles]}
+        """
+        logging.info("\n" + "=" * 70)
+        logging.info("ANALYZING TRAINING DATA")
+        logging.info("=" * 70)
+
+        content_dir: Path = self.source_train_dir / "ContentImage"
+        target_dir: Path = self.source_train_dir / "TargetImage"
+
+        content_files: Dict[str, str] = {}  # char -> file_path
+        target_files: Dict[Tuple[str, str], str] = {}  # (char, style) -> file_path
+        char_to_styles: Dict[str, List[str]] = defaultdict(set)
+
+        # Scan content images
+        logging.info("\n🔍 Scanning content images...")
+        if content_dir.exists():
+            for img_file in tqdm(
+                list(content_dir.glob("*.png")),
+                desc="Content images",
+                unit="img",
+            ):
+                char = parse_content_filename(img_file.name)
+                if char:
+                    content_files[char] = str(img_file)
+
+        logging.info(f"  ✓ Found {len(content_files)} content images")
+
+        # Scan target images with detailed diagnostics
+        logging.info("\n🔍 Scanning target images...")
+        total_targets = 0
+        style_mismatch_count = 0
+        parse_error_count = 0
+        
+        style_mismatch_details = defaultdict(list)
+        unparseable_files = []  # ✅ Collect unparseable files for later diagnosis
+        
+        for style_folder in tqdm(
+            sorted(target_dir.iterdir()),
+            desc="Styles",
+            unit="style",
+        ):
+            if not style_folder.is_dir():
+                continue
+
+            style_name = style_folder.name
+
+            for img_file in style_folder.glob("*.png"):
+                parsed = parse_target_filename(img_file.name)
+                
+                if parsed is None:
+                    parse_error_count += 1
+                    unparseable_files.append({
+                        "folder": style_name,
+                        "filename": img_file.name,
+                    })
+                    continue
+                
+                char, style = parsed
+
+                # ✅ Validate style matches folder
+                if style != style_name:
+                    style_mismatch_count += 1
+                    style_mismatch_details[style_name].append({
+                        "filename": img_file.name,
+                        "extracted_style": style,
+                        "folder_style": style_name,
+                    })
+                    continue  # ✅ Skip this file
+
+                target_files[(char, style)] = str(img_file)
+                char_to_styles[char].add(style)
+                total_targets += 1
+
+        logging.info(f"  ✓ Found {total_targets} valid target images")
+        
+        # ✅ Print parse error diagnostics
+        if parse_error_count > 0:
+            logging.info(f"\n⚠️  PARSE ERROR DIAGNOSTICS:")
+            logging.info(f"  Total parse errors: {parse_error_count}")
+            logging.info(f"\n  First 10 unparseable files:")
+            for item in unparseable_files[:10]:
+                logging.info(f"    Folder: {item['folder']}")
+                logging.info(f"    File:   {item['filename']}")
+                stem = item['filename'][:-4]
+                parts = stem.split("_")
+                logging.info(f"    Parts:  {parts} (count: {len(parts)})")
+            if len(unparseable_files) > 10:
+                logging.info(f"    ... and {len(unparseable_files) - 10} more")
+        
+        # ✅ Print style mismatch diagnostics
+        if style_mismatch_count > 0:
+            logging.info(f"\n⚠️  STYLE MISMATCH DIAGNOSTICS:")
+            logging.info(f"  Total mismatches: {style_mismatch_count}")
+            for style_folder, mismatches in style_mismatch_details.items():
+                logging.info(f"\n  Folder: {style_folder}")
+                logging.info(f"    Mismatch count: {len(mismatches)}")
+                for mismatch in mismatches[:3]:
+                    logging.info(f"      - {mismatch['filename']}")
+                    logging.info(f"        Extracted: '{mismatch['extracted_style']}' vs Expected: '{mismatch['folder_style']}'")
+                if len(mismatches) > 3:
+                    logging.info(f"      ... and {len(mismatches) - 3} more")
+
+        # Validate content↔target pairing
+        logging.info("\n🔍 Validating content ↔ target pairs...")
+        valid_pairs: Dict[Tuple[str, str], bool] = {}
+        missing_content_count = 0
+
+        for (char, style) in tqdm(
+            target_files.keys(),
+            desc="Validating pairs",
+            ncols=100,
+            unit="pair",
+        ):
+            if char not in content_files:
+                missing_content_count += 1
+                valid_pairs[(char, style)] = False
+            else:
+                valid_pairs[(char, style)] = True
+
+        # Filter to only valid pairs
+        valid_target_files = {
+            pair: path
+            for pair, path in target_files.items()
+            if valid_pairs.get(pair, False)
+        }
+
+        # ✅ COMPREHENSIVE ANALYSIS SUMMARY
+        logging.info(f"\n" + "=" * 70)
+        logging.info(f"📊 DATA ANALYSIS SUMMARY")
+        logging.info(f"=" * 70)
+        logging.info(f"Content images found:        {len(content_files):,}")
+        logging.info(f"Target images scanned:       {total_targets:,}")
+        logging.info(f"  ├─ Parse errors:          {parse_error_count:,}")
+        logging.info(f"  └─ Style mismatches:      {style_mismatch_count:,}")
+        logging.info(f"Target images after filter:  {len(target_files):,}")
+        logging.info(f"Missing content images:      {missing_content_count:,}")
+        logging.info(f"Final valid pairs:           {len(valid_target_files):,}")
+        logging.info(f"=" * 70)
+        
+        # ✅ Calculate and show loss
+        expected_total = total_targets
+        lost_to_parse_error = parse_error_count
+        lost_to_style_mismatch = style_mismatch_count
+        lost_to_missing_content = missing_content_count
+        total_lost = lost_to_parse_error + lost_to_style_mismatch + lost_to_missing_content
+        
+        if total_lost > 0:
+            logging.info(f"\n⚠️  IMAGE LOSS BREAKDOWN:")
+            logging.info(f"  Total scanned:          {expected_total:,}")
+            logging.info(f"  Lost to parse errors:   {lost_to_parse_error:,} ({lost_to_parse_error*100/expected_total:.2f}%)")
+            logging.info(f"  Lost to style mismatch: {lost_to_style_mismatch:,} ({lost_to_style_mismatch*100/expected_total:.2f}%)")
+            logging.info(f"  Lost to missing content:{lost_to_missing_content:,} ({lost_to_missing_content*100/expected_total:.2f}%)")
+            logging.info(f"  Total lost:             {total_lost:,} ({total_lost*100/expected_total:.2f}%)")
+            logging.info(f"  Usable for split:       {len(valid_target_files):,} ({len(valid_target_files)*100/expected_total:.2f}%)")
+
+        return content_files, valid_target_files, dict(char_to_styles)
+
     def create_simple_splits(
         self,
         content_files: Dict[str, str],
@@ -239,9 +356,9 @@ class ValidationSplitCreator:
         - Randomly split both characters and styles
         - Only pairs (char, style) where both char and style are in the split are included
         """
-        logging.info("=" * 60)
+        logging.info("\n" + "=" * 70)
         logging.info("CREATING TRAIN/VAL SPLITS (random char & style)")
-        logging.info("=" * 60)
+        logging.info("=" * 70)
 
         all_chars = sorted(list(content_files.keys()))
         all_styles = sorted({style for (_, style) in target_files.keys()})
@@ -293,163 +410,13 @@ class ValidationSplitCreator:
 
         return scenarios
 
-    def analyze_data(
-        self,
-    ) -> Tuple[Dict[str, str], Dict[Tuple[str, str], str], Dict[str, List[str]]]:
-        """
-        ✅ CORRECTED: Analyze by scanning actual files and matching content↔target pairs
-        ✅ With detailed diagnostics to find missing images
-        """
-        logging.info("\n" + "=" * 70)
-        logging.info("ANALYZING TRAINING DATA")
-        logging.info("=" * 70)
-
-        content_dir: Path = self.source_train_dir / "ContentImage"
-        target_dir: Path = self.source_train_dir / "TargetImage"
-
-        content_files: Dict[str, str] = {}  # char -> file_path
-        target_files: Dict[Tuple[str, str], str] = {}  # (char, style) -> file_path
-        char_to_styles: Dict[str, List[str]] = defaultdict(set)
-
-        # Scan content images
-        logging.info("\n🔍 Scanning content images...")
-        if content_dir.exists():
-            for img_file in tqdm(
-                list(content_dir.glob("*.png")),
-                desc="Content images",
-                unit="img",
-            ):
-                char = parse_content_filename(img_file.name)
-                if char:
-                    content_files[char] = str(img_file)
-
-        logging.info(f"  ✓ Found {len(content_files)} content images")
-
-        # Scan target images with detailed diagnostics
-        logging.info("\n🔍 Scanning target images...")
-        total_targets = 0
-        style_mismatch_count = 0  # ✅ Track mismatches
-        parse_error_count = 0      # ✅ Track parse errors
-        
-        style_mismatch_details = defaultdict(list)  # ✅ Store details
-        
-        for style_folder in tqdm(
-            sorted(target_dir.iterdir()),
-            desc="Styles",
-            unit="style",
-        ):
-            if not style_folder.is_dir():
-                continue
-
-            style_name = style_folder.name
-
-            for img_file in style_folder.glob("*.png"):
-                parsed = parse_target_filename(img_file.name)
-                
-                if parsed is None:
-                    parse_error_count += 1
-                    tqdm.write(f"  ⚠️  Parse error: {img_file.name}")
-                    continue
-                
-                char, style = parsed
-
-                # ✅ Validate style matches folder
-                if style != style_name:
-                    style_mismatch_count += 1
-                    style_mismatch_details[style_name].append({
-                        "filename": img_file.name,
-                        "extracted_style": style,
-                        "folder_style": style_name,
-                    })
-                    tqdm.write(
-                        f"  ⚠️  Style mismatch in '{style_name}': {img_file.name}\n"
-                        f"      → Extracted: '{style}', Expected: '{style_name}'"
-                    )
-                    continue  # ✅ Skip this file
-
-                target_files[(char, style)] = str(img_file)
-                char_to_styles[char].add(style)
-                total_targets += 1
-
-        logging.info(f"  ✓ Found {total_targets} valid target images")
-        
-        # ✅ Print diagnostics
-        if style_mismatch_count > 0:
-            logging.info(f"\n⚠️  DIAGNOSTICS: Style Mismatches Found")
-            logging.info(f"  Total mismatches: {style_mismatch_count}")
-            for style_folder, mismatches in style_mismatch_details.items():
-                logging.info(f"\n  Folder: {style_folder}")
-                logging.info(f"    Mismatch count: {len(mismatches)}")
-                for mismatch in mismatches[:3]:  # Show first 3
-                    logging.info(f"      - {mismatch['filename']}")
-                    logging.info(f"        File says: {mismatch['extracted_style']}")
-                if len(mismatches) > 3:
-                    logging.info(f"      ... and {len(mismatches) - 3} more")
-        
-        if parse_error_count > 0:
-            logging.info(f"\n⚠️  Parse errors: {parse_error_count}")
-
-        # Validate content↔target pairing
-        logging.info("\n🔍 Validating content ↔ target pairs...")
-        valid_pairs: Dict[Tuple[str, str], bool] = {}
-        missing_content_count = 0
-
-        for (char, style) in tqdm(
-            target_files.keys(),
-            desc="Validating pairs",
-            ncols=100,
-            unit="pair",
-        ):
-            if char not in content_files:
-                tqdm.write(f"  ⚠️  Missing content for: {char} (U+{ord(char):04X}) (style: {style})")
-                missing_content_count += 1
-                valid_pairs[(char, style)] = False
-            else:
-                valid_pairs[(char, style)] = True
-
-        # Filter to only valid pairs
-        valid_target_files = {
-            pair: path
-            for pair, path in target_files.items()
-            if valid_pairs.get(pair, False)
-        }
-
-        # ✅ DIAGNOSTIC SUMMARY
-        logging.info(f"\n" + "=" * 70)
-        logging.info(f"📊 ANALYSIS SUMMARY")
-        logging.info(f"=" * 70)
-        logging.info(f"Content images:      {len(content_files):,}")
-        logging.info(f"Target images found: {total_targets:,}")
-        logging.info(f"  ├─ Parse errors:           {parse_error_count:,}")
-        logging.info(f"  └─ Style mismatches:       {style_mismatch_count:,}")
-        logging.info(f"Target valid after filtering: {len(target_files):,}")
-        logging.info(f"Missing content images:      {missing_content_count:,}")
-        logging.info(f"Final valid pairs:           {len(valid_target_files):,}")
-        logging.info(f"=" * 70)
-        
-        # ✅ Calculate loss
-        expected_total = total_targets
-        lost_to_style_mismatch = style_mismatch_count
-        lost_to_missing_content = missing_content_count
-        total_lost = lost_to_style_mismatch + lost_to_missing_content
-        
-        if total_lost > 0:
-            logging.info(f"\n⚠️  IMAGE LOSS BREAKDOWN:")
-            logging.info(f"  Total images found: {expected_total:,}")
-            logging.info(f"  Lost to style mismatch: {lost_to_style_mismatch:,} ({lost_to_style_mismatch*100/expected_total:.2f}%)")
-            logging.info(f"  Lost to missing content: {lost_to_missing_content:,} ({lost_to_missing_content*100/expected_total:.2f}%)")
-            logging.info(f"  Total lost: {total_lost:,}")
-            logging.info(f"  Final count: {len(valid_target_files):,}")
-
-        return content_files, valid_target_files, dict(char_to_styles)
-
     def copy_images_for_split(
         self,
         split_name: str,
         split_dir: Path,
         scenarios: Dict[str, Dict],
-        content_files: Dict[str, str],  # ✅ char -> file_path (NOT hash!)
-        target_files: Dict[Tuple[str, str], str],  # ✅ (char, style) -> file_path (NOT hash!)
+        content_files: Dict[str, str],
+        target_files: Dict[Tuple[str, str], str],
     ) -> Tuple[int, int, int]:
         """Copy images for a specific split using ACTUAL file paths"""
         split_config = scenarios[split_name]
@@ -480,11 +447,9 @@ class ValidationSplitCreator:
             leave=False,
         ):
             if char not in content_files:
-                tqdm.write(f"    ⚠️  Char not in content_files: {char} (U+{ord(char):04X})")
                 skipped += 1
                 continue
 
-            # ✅ content_files[char] is a FILE PATH, not a hash!
             src_path = Path(content_files[char])
             
             if not src_path.exists():
@@ -492,7 +457,6 @@ class ValidationSplitCreator:
                 skipped += 1
                 continue
 
-            # Use the ACTUAL filename from the file path
             dst_path = split_content_dir / src_path.name
 
             if src_path.resolve() != dst_path.resolve():
@@ -503,7 +467,6 @@ class ValidationSplitCreator:
                     tqdm.write(f"    ⚠️  Error copying: {e}")
                     skipped += 1
             else:
-                # Source and destination are the same
                 content_copied += 1
 
         # Copy target images
@@ -519,7 +482,6 @@ class ValidationSplitCreator:
             if char not in allowed_chars or style not in allowed_styles:
                 continue
 
-            # ✅ target_files[(char, style)] is a FILE PATH, not a hash!
             src_path = Path(target_path_str)
             
             if not src_path.exists():
@@ -527,7 +489,6 @@ class ValidationSplitCreator:
                 skipped += 1
                 continue
 
-            # Use the ACTUAL filename from the file path
             dst_path = split_target_dir / style / src_path.name
 
             if src_path.resolve() != dst_path.resolve():
@@ -538,7 +499,6 @@ class ValidationSplitCreator:
                     tqdm.write(f"    ⚠️  Error copying: {e}")
                     skipped += 1
             else:
-                # Source and destination are the same
                 target_copied += 1
 
         logging.info(
@@ -547,7 +507,6 @@ class ValidationSplitCreator:
 
         return content_copied, target_copied, skipped
 
-    
     def _copy_and_filter_checkpoint(
         self,
         split_name: str,
@@ -557,7 +516,7 @@ class ValidationSplitCreator:
         target_files: Dict[Tuple[str, str], str],
     ) -> None:
         """
-        ✅ Filter results_checkpoint.json to only include generations
+        Filter results_checkpoint.json to only include generations
         that have both content and target in this split
         """
         logging.info(f"\n  📋 Filtering checkpoint for {split_name}...")
@@ -624,46 +583,6 @@ class ValidationSplitCreator:
         logging.info(
             f"    ✓ Saved: {len(filtered_generations):,}/{len(original_generations):,} generations"
         )
-    
-    def debug_parse_errors(
-        self,
-    ) -> None:
-        """Debug which files are failing to parse"""
-        logging.info("\n" + "=" * 70)
-        logging.info("🔍 DEBUGGING PARSE ERRORS")
-        logging.info("=" * 70)
-
-        target_dir: Path = self.source_train_dir / "TargetImage"
-        
-        unparseable_files = []
-        
-        for style_folder in target_dir.iterdir():
-            if not style_folder.is_dir():
-                continue
-
-            style_name = style_folder.name
-
-            for img_file in sorted(style_folder.glob("*.png")):
-                parsed = parse_target_filename(img_file.name)
-                
-                if parsed is None:
-                    unparseable_files.append({
-                        "folder": style_name,
-                        "filename": img_file.name,
-                    })
-
-        logging.info(f"\nUnparseable files: {len(unparseable_files)}")
-        
-        if unparseable_files:
-            logging.info("\nSample unparseable files:")
-            for item in unparseable_files[:10]:
-                logging.info(f"  Folder: {item['folder']}")
-                logging.info(f"  File:   {item['filename']}")
-                
-                # Try to understand the format
-                stem = item['filename'][:-4]
-                parts = stem.split("_")
-                logging.info(f"  Parts: {parts} (count: {len(parts)})")
 
     def create_splits(self) -> None:
         """Main function to create train/val splits"""
@@ -671,16 +590,16 @@ class ValidationSplitCreator:
         logging.info("FONTDIFFUSION VALIDATION SPLIT CREATOR")
         logging.info("=" * 70)
 
-        # Analyze data
+        # Step 1: Analyze data
         content_files, target_files, char_to_styles = self.analyze_data()
 
-        # Create split scenarios
+        # Step 2: Create split scenarios
         scenarios = self.create_simple_splits(
             content_files, target_files, char_to_styles
         )
 
-        # Create train split
-        logging.info("\n📁 Creating train split...")
+        # Step 3: Create train split
+        logging.info("\n📁 CREATING TRAIN SPLIT...")
         train_chars = set(scenarios["train"]["characters"])
         train_styles = set(scenarios["train"]["styles"])
         
@@ -692,11 +611,11 @@ class ValidationSplitCreator:
             self.train_dir,
             train_chars,
             train_styles,
-            target_files,  # ✅ Pass original, let the filter handle both char AND style
+            target_files,
         )
 
-        # Create val split
-        logging.info(f"\n📁 Creating val split...")
+        # Step 4: Create val split
+        logging.info(f"\n📁 CREATING VAL SPLIT...")
         val_chars = set(scenarios["val"]["characters"])
         val_styles = set(scenarios["val"]["styles"])
         
@@ -708,10 +627,10 @@ class ValidationSplitCreator:
             self.val_dir,
             val_chars,
             val_styles,
-            target_files,  # ✅ Pass original, let the filter handle both char AND style
+            target_files,
         )
 
-        # Save metadata
+        # Step 5: Save metadata
         self._save_metadata(scenarios)
 
     def _save_metadata(self, scenarios: Dict[str, Dict]) -> None:
@@ -723,6 +642,10 @@ class ValidationSplitCreator:
 
         logging.info(f"\n✓ Saved split metadata to {metadata_path}")
 
+
+# ============================================================================
+# ENTRY POINT
+# ============================================================================
 
 def create_validation_split(
     data_root: str,
@@ -737,7 +660,6 @@ def create_validation_split(
     )
 
     creator = ValidationSplitCreator(config)
-    creator.debug_parse_errors()
     creator.create_splits()
 
     logging.info("\n" + "=" * 70)
