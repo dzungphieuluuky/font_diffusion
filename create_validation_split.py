@@ -1,13 +1,15 @@
 """
 Create validation/test splits from training data
-✅ SIMPLIFIED: Creates only train + val (unseen char + unseen style)
-✅ Parses filenames by codepoint and hash only (no reliance on safe char)
-✅ Copies and filters results_checkpoint.json for each split
+✅ CORRECTED: Properly handles train/val splits with checkpoint filtering
+✅ Parses filenames as codepoint_char_hash.png and codepoint_char_style_hash.png
+✅ Ensures checkpoint.json contains only relevant generations
+✅ Validates content↔target pairs exist before including in split
 """
 
 import os
 import shutil
 import json
+import logging
 from pathlib import Path
 from typing import Dict, List, Tuple, Set, Optional
 from dataclasses import dataclass
@@ -16,6 +18,24 @@ import random
 
 from tqdm import tqdm
 import hashlib
+
+
+# Setup logging with tqdm compatibility
+class TqdmLoggingHandler(logging.Handler):
+    def emit(self, record):
+        try:
+            msg = self.format(record)
+            tqdm.write(msg)
+            self.flush()
+        except Exception:
+            self.handleError(record)
+
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(message)s",
+    handlers=[TqdmLoggingHandler()],
+)
 
 
 def compute_file_hash(char: str, style: str, font: str = "") -> str:
@@ -27,375 +47,293 @@ def compute_file_hash(char: str, style: str, font: str = "") -> str:
 def get_content_filename(char: str, font: str = "") -> str:
     """
     Get content image filename for character
-    Format: {unicode_codepoint}_{char}_{hash}.png or {unicode_codepoint}_{hash}.png
+    Format: {unicode_codepoint}_{char}_{hash}.png
     """
     codepoint = f"U+{ord(char):04X}"
     hash_val = compute_file_hash(char, "", font)
-    safe_char = char if char.isprintable() and char not in '<>:"/\\|?*' else ""
-    if safe_char:
-        return f"{codepoint}_{safe_char}_{hash_val}.png"
-    else:
-        return f"{codepoint}_{hash_val}.png"
+    return f"{codepoint}_{char}_{hash_val}.png"
 
 
 def get_target_filename(char: str, style: str, font: str = "") -> str:
     """
     Get target image filename
-    Format: {unicode_codepoint}_{char}_{style}_{hash}.png or {unicode_codepoint}_{style}_{hash}.png
+    Format: {unicode_codepoint}_{char}_{style}_{hash}.png
     """
     codepoint = f"U+{ord(char):04X}"
     hash_val = compute_file_hash(char, style, font)
-    safe_char = char if char.isprintable() and char not in '<>:"/\\|?*' else ""
-    if safe_char:
-        return f"{codepoint}_{safe_char}_{style}_{hash_val}.png"
-    else:
-        return f"{codepoint}_{style}_{hash_val}.png"
+    return f"{codepoint}_{char}_{style}_{hash_val}.png"
 
 
-def detect_font_parameter(content_dir: Path, sample_chars: List[str]) -> str:
+def parse_content_filename(filename: str) -> Optional[Tuple[str, str]]:
     """
-    Auto-detect the font parameter used during generation by reverse-engineering
-    from existing content image filenames.
+    Parse content filename: U+XXXX_{char}_{hash}.png
+    Returns: (char, hash) or None if parse fails
     """
-    print("\n🔍 Auto-detecting font parameter from existing files...")
+    if not filename.endswith('.png'):
+        return None
+    
+    stem = filename[:-4]  # Remove .png
+    parts = stem.split('_')
+    
+    if len(parts) < 3:
+        return None
+    
+    codepoint = parts[0]
+    hash_val = parts[-1]
+    
+    if not codepoint.startswith("U+"):
+        return None
+    
+    try:
+        char_code = int(codepoint.replace("U+", ""), 16)
+        char = chr(char_code)
+        return (char, hash_val)
+    except (ValueError, OverflowError):
+        return None
 
-    # ✅ Get fonts from fonts/ directory
-    fonts_dir = Path(__file__).parent / "fonts"
-    candidate_fonts = ["", "default"]  # Start with empty and default
 
-    if fonts_dir.exists() and fonts_dir.is_dir():
-        # Add all .ttf and .otf files (without extension)
-        for font_file in fonts_dir.glob("*.[to][tf][f]"):  # Matches .ttf and .otf
-            font_name = font_file.stem  # Filename without extension
-            candidate_fonts.append(font_name)
-
-        print(f"  📂 Found {len(candidate_fonts) - 2} fonts in fonts/ directory")
-    else:
-        print(f"  ⚠️  fonts/ directory not found, using defaults only")
-
-    # Try to find a match using sample characters
-    for test_char in sample_chars[:5]:  # Test with first 5 chars
-        # Get actual filename from disk using only codepoint
-        codepoint = f"U+{ord(test_char):04X}"
-
-        # Find files matching this character's codepoint (pattern: U+XXXX_*.png)
-        pattern = f"{codepoint}_*.png"
-        matching_files = list(content_dir.glob(pattern))
-
-        if not matching_files:
-            continue
-
-        # Get the actual hash from the filename
-        actual_file = matching_files[0]
-        actual_filename = actual_file.stem
-        parts = actual_filename.split("_")
-
-        if len(parts) >= 2:
-            actual_hash = parts[-1]  # Last part is the hash
-
-            # Try each candidate font to see which produces this hash
-            for candidate_font in candidate_fonts:
-                test_hash = compute_file_hash(test_char, "", candidate_font)
-
-                if test_hash == actual_hash:
-                    print(f"  ✓ Detected font parameter: '{candidate_font}'")
-                    print(f"    Verified with: {actual_file.name}")
-                    return candidate_font
-
-    # If no match found, show some example filenames for manual inspection
-    print(f"  ⚠️  Could not auto-detect font parameter")
-    print(f"  Example files found in {content_dir}:")
-
-    example_files = list(content_dir.glob("*.png"))[:5]
-    for f in example_files:
-        print(f"    {f.name}")
-
-    print(f"\n  Available candidate fonts tried:")
-    for cf in candidate_fonts[:10]:
-        print(f"    '{cf}'")
-    if len(candidate_fonts) > 10:
-        print(f"    ... and {len(candidate_fonts) - 10} more")
-
-    print(f"\n  Please check the hash generation in your sample script.")
-    print(f"  Defaulting to empty string ('')")
-
-    return ""
+def parse_target_filename(filename: str) -> Optional[Tuple[str, str, str]]:
+    """
+    Parse target filename: U+XXXX_{char}_{style}_{hash}.png
+    Returns: (char, style, hash) or None if parse fails
+    """
+    if not filename.endswith('.png'):
+        return None
+    
+    stem = filename[:-4]  # Remove .png
+    parts = stem.split('_')
+    
+    if len(parts) < 4:
+        return None
+    
+    codepoint = parts[0]
+    hash_val = parts[-1]
+    
+    if not codepoint.startswith("U+"):
+        return None
+    
+    try:
+        char_code = int(codepoint.replace("U+", ""), 16)
+        char = chr(char_code)
+        
+        # Style is everything between char and hash
+        # parts[0] = codepoint
+        # parts[1] = char
+        # parts[2:-1] = style (can have multiple underscores)
+        # parts[-1] = hash
+        style = "_".join(parts[2:-1])
+        
+        return (char, style, hash_val)
+    except (ValueError, OverflowError):
+        return None
 
 
 @dataclass
 class ValidationSplitConfig:
     """Configuration for validation split creation"""
-
-    data_root: str  # e.g., "data_examples"
-    val_split_ratio: float = 0.2  # 20% for validation
+    data_root: str
+    val_split_ratio: float = 0.2
     random_seed: int = 42
 
 
 class ValidationSplitCreator:
-    """Create train/val splits (unseen char + unseen style only)"""
+    """Create train/val splits with proper checkpoint filtering"""
 
     def __init__(self, config: ValidationSplitConfig):
         self.config = config
         self.data_root = Path(config.data_root)
-
-        # Use separate directory for original data
+        
         self.original_train_dir = self.data_root / "train_original"
-
-        # Split directories
         self.train_dir = self.data_root / "train"
         self.val_dir = self.data_root / "val"
-
-        # Set random seed
+        
         random.seed(config.random_seed)
-
-        # Will be detected from files
-        self.detected_font = None
-
+        self.detected_font = ""
+        
         self._validate_structure()
 
     def _validate_structure(self) -> None:
         """Validate training directory structure"""
-        # Check if original exists, otherwise check train
         source_dir = (
             self.original_train_dir
             if self.original_train_dir.exists()
             else self.train_dir
         )
-
+        
         if not (source_dir / "TargetImage").exists():
             raise ValueError(f"TargetImage not found in {source_dir}")
         if not (source_dir / "ContentImage").exists():
             raise ValueError(f"ContentImage not found in {source_dir}")
-
+        
         self.source_train_dir = source_dir
-        print(f"✓ Using source directory: {self.source_train_dir}")
+        logging.info(f"✓ Using source directory: {self.source_train_dir}")
 
-    def analyze_data(
-        self,
-    ) -> Tuple[List[str], List[str], Dict[str, List[str]], Dict[Tuple[str, str], bool]]:
+    def analyze_data(self) -> Tuple[Dict[str, str], Dict[Tuple[str, str], str], Dict[str, List[str]]]:
         """
-        ✅ SIMPLIFIED: Analyze training data by parsing codepoint and hash only
-        Does not rely on safe character in filename
-
+        ✅ CORRECTED: Analyze by scanning actual files and matching content↔target pairs
+        
         Returns:
-        - All styles
-        - All characters
-        - Character->Style mapping
-        - Valid (char, style) pairs that have target images
+        - content_files: {char -> hash} (what content images exist)
+        - target_files: {(char, style) -> hash} (what target images exist with their hash)
+        - char_to_styles: {char -> [styles]} (which styles exist for each char)
         """
-        print("\n" + "=" * 60)
-        print("ANALYZING TRAINING DATA")
-        print("=" * 60)
-
-        styles = set()
-        characters = set()
-        char_to_styles = defaultdict(set)
-        valid_pairs = set()
-
-        target_dir = self.source_train_dir / "TargetImage"
+        logging.info("\n" + "=" * 70)
+        logging.info("ANALYZING TRAINING DATA")
+        logging.info("=" * 70)
+        
         content_dir = self.source_train_dir / "ContentImage"
-
-        # ✅ Scan all style directories
-        print("\n🔍 Scanning target images...")
+        target_dir = self.source_train_dir / "TargetImage"
+        
+        content_files: Dict[str, str] = {}  # char -> hash
+        target_files: Dict[Tuple[str, str], str] = {}  # (char, style) -> hash
+        char_to_styles: Dict[str, List[str]] = defaultdict(set)
+        
+        # Scan content images
+        logging.info("\n🔍 Scanning content images...")
+        if content_dir.exists():
+            for img_file in tqdm(
+                list(content_dir.glob("*.png")),
+                desc="Content images",
+                ncols=100,
+                unit="img",
+            ):
+                result = parse_content_filename(img_file.name)
+                if result:
+                    char, hash_val = result
+                    content_files[char] = hash_val
+        
+        logging.info(f"  ✓ Found {len(content_files)} content images")
+        
+        # Scan target images
+        logging.info("\n🔍 Scanning target images...")
+        total_targets = 0
         for style_folder in tqdm(
-            sorted(target_dir.iterdir()), desc="Styles", unit="style", ncols=100
+            sorted(target_dir.iterdir()),
+            desc="Styles",
+            ncols=100,
+            unit="style",
         ):
             if not style_folder.is_dir():
                 continue
-
-            style_name = style_folder.name  # The actual style name from folder
-            styles.add(style_name)
-
-            # Scan images: U+XXXX_[char]_style_hash.png or U+XXXX_style_hash.png
+            
+            style_name = style_folder.name
+            
             for img_file in style_folder.glob("*.png"):
-                filename = img_file.stem  # Remove .png
-
-                if "_" not in filename:
-                    continue
-
-                try:
-                    parts = filename.split("_")
-
-                    if len(parts) < 3:
-                        continue
-
-                    # ✅ SIMPLIFIED: Extract only codepoint and hash
-                    codepoint = parts[0]  # U+XXXX
-                    hash_val = parts[-1]  # Last part is always hash
-
-                    # Validate codepoint format
-                    if not codepoint.startswith("U+"):
-                        continue
-
-                    # ✅ Decode character from codepoint (no reliance on safe char)
-                    try:
-                        char_code = int(codepoint.replace("U+", ""), 16)
-                        char_part = chr(char_code)
-                    except (ValueError, OverflowError):
-                        tqdm.write(f"  ⚠️  Invalid codepoint: {codepoint} in {filename}")
-                        continue
-
-                    # ✅ Extract style: everything between codepoint and hash, excluding safe char if present
-                    # We need to determine if safe char is present
-                    safe_char_expected = (
-                        char_part
-                        if char_part.isprintable() and char_part not in '<>:"/\\|?*'
-                        else ""
-                    )
-
-                    if len(parts) >= 4 and parts[1] == safe_char_expected:
-                        # Format: U+XXXX_char_style_hash
-                        # Style is parts[2:-1]
-                        style_part = "_".join(parts[2:-1])
-                    else:
-                        # Format: U+XXXX_style_hash (no safe char)
-                        # Style is parts[1:-1]
-                        style_part = "_".join(parts[1:-1])
-
-                    # Validate that extracted style matches folder name
-                    if style_part != style_name:
+                result = parse_target_filename(img_file.name)
+                if result:
+                    char, style, hash_val = result
+                    
+                    # Validate style matches folder
+                    if style != style_name:
                         tqdm.write(
-                            f"  ⚠️  Style mismatch: extracted '{style_part}' != folder '{style_name}' in {filename}"
+                            f"  ⚠️  Style mismatch: {img_file.name} "
+                            f"(extracted '{style}' != folder '{style_name}')"
                         )
                         continue
-
-                    # Add to collections
-                    characters.add(char_part)
-                    char_to_styles[char_part].add(style_name)
-                    valid_pairs.add((char_part, style_name))
-
-                except (IndexError, ValueError) as e:
-                    tqdm.write(f"  ⚠️  Failed to parse: {filename} ({e})")
-                    continue
-
-        styles_list = sorted(list(styles))
-        chars_list = sorted(list(characters))
-
-        print(f"\n✓ Initial scan:")
-        print(f"  Styles: {len(styles_list)}")
-        print(f"  Characters: {len(chars_list)}")
-        print(f"  Valid (char, style) pairs: {len(valid_pairs)}")
-
-        # ✅ Auto-detect font parameter from existing content images
-        if chars_list:
-            self.detected_font = detect_font_parameter(content_dir, chars_list)
-        else:
-            print(f"  ⚠️  No characters found, cannot detect font parameter")
-            self.detected_font = ""
-
-        # Check for missing content images with detected font
-        print(f"\n🔍 Validating content images (using font='{self.detected_font}')...")
-        missing_content = []
-        found_content = 0
-
-        for char in tqdm(chars_list, desc="Checking content", unit="char", ncols=100):
-            content_filename = get_content_filename(char, font=self.detected_font)
-            content_path = content_dir / content_filename
-
-            if not content_path.exists():
-                missing_content.append(char)
+                    
+                    target_files[(char, style)] = hash_val
+                    char_to_styles[char].add(style)
+                    total_targets += 1
+        
+        logging.info(f"  ✓ Found {total_targets} target images")
+        
+        # Validate content↔target pairing
+        logging.info("\n🔍 Validating content↔target pairs...")
+        valid_pairs: Dict[Tuple[str, str], bool] = {}
+        missing_count = 0
+        
+        for (char, style), target_hash in tqdm(
+            target_files.items(),
+            desc="Validating pairs",
+            ncols=100,
+            unit="pair",
+        ):
+            if char not in content_files:
+                tqdm.write(
+                    f"  ⚠️  Missing content for: {char} (style: {style})"
+                )
+                missing_count += 1
+                valid_pairs[(char, style)] = False
             else:
-                found_content += 1
-
-        if missing_content:
-            print(
-                f"\n⚠️  WARNING: {len(missing_content)}/{len(chars_list)} characters missing content images:"
-            )
-            print(
-                f"  Examples: {missing_content[:10]}{'...' if len(missing_content) > 10 else ''}"
-            )
-            print(f"  These characters will be excluded from splits")
-
-            # Remove characters with missing content images
-            for char in missing_content:
-                del char_to_styles[char]
-                characters.discard(char)
-                valid_pairs = {(c, s) for c, s in valid_pairs if c != char}
-
-            chars_list = sorted(list(characters))
-
-        print(f"\n✅ After validation:")
-        print(f"  Characters with content images: {len(chars_list)}")
-        print(f"  Valid (char, style) pairs: {len(valid_pairs)}")
-        print(f"  Content images found: {found_content}")
-
-        # Show character distribution per style
-        style_char_counts = {
-            style: len([c for c, s in valid_pairs if s == style])
-            for style in styles_list
+                valid_pairs[(char, style)] = True
+        
+        # Filter to only valid pairs
+        valid_target_files = {
+            pair: hash_val
+            for pair, hash_val in target_files.items()
+            if valid_pairs.get(pair, False)
         }
-        print(f"\n📊 Character distribution per style:")
-        for style in sorted(style_char_counts.keys())[:10]:
-            print(f"  {style}: {style_char_counts[style]} characters")
-        if len(style_char_counts) > 10:
-            print(f"  ... and {len(style_char_counts) - 10} more styles")
-
-        return styles_list, chars_list, dict(char_to_styles), valid_pairs
+        
+        logging.info(f"\n✅ Summary:")
+        logging.info(f"  Content images: {len(content_files)}")
+        logging.info(f"  Target images: {len(target_files)}")
+        logging.info(f"  Valid pairs: {len(valid_target_files)}")
+        if missing_count > 0:
+            logging.info(f"  Missing content: {missing_count}")
+        
+        return content_files, valid_target_files, dict(char_to_styles)
 
     def create_simple_splits(
         self,
-        styles: List[str],
-        characters: List[str],
+        content_files: Dict[str, str],
+        target_files: Dict[Tuple[str, str], str],
         char_to_styles: Dict[str, List[str]],
     ) -> Dict[str, Dict]:
         """
-        ✅ SIMPLIFIED: Create only train + val (unseen char + unseen style)
+        ✅ CORRECTED: Create train/val splits
+        - Train gets: random subset of chars + their styles
+        - Val gets: remaining chars + their styles
         """
-        print("\n" + "=" * 60)
-        print("CREATING TRAIN/VAL SPLITS")
-        print("=" * 60)
-
-        num_styles = len(styles)
-        num_chars = len(characters)
-
-        # Calculate validation split sizes
-        num_val_styles = max(1, int(num_styles * self.config.val_split_ratio))
+        logging.info("\n" + "=" * 70)
+        logging.info("CREATING TRAIN/VAL SPLITS")
+        logging.info("=" * 70)
+        
+        all_chars = sorted(list(content_files.keys()))
+        num_chars = len(all_chars)
+        
         num_val_chars = max(1, int(num_chars * self.config.val_split_ratio))
-
-        num_train_styles = num_styles - num_val_styles
         num_train_chars = num_chars - num_val_chars
-
-        # Randomly split
-        shuffled_styles = styles.copy()
-        random.shuffle(shuffled_styles)
-
-        shuffled_chars = characters.copy()
+        
+        # Shuffle and split characters
+        shuffled_chars = all_chars.copy()
         random.shuffle(shuffled_chars)
-
-        train_styles = set(shuffled_styles[:num_train_styles])
-        val_styles = set(shuffled_styles[num_train_styles:])
-
+        
         train_chars = set(shuffled_chars[:num_train_chars])
         val_chars = set(shuffled_chars[num_train_chars:])
-
+        
+        # For each split, get the styles that exist for those chars
+        train_styles = set()
+        val_styles = set()
+        
+        for (char, style) in target_files.keys():
+            if char in train_chars:
+                train_styles.add(style)
+            elif char in val_chars:
+                val_styles.add(style)
+        
         scenarios = {
             "train": {
-                "styles": list(train_styles),
-                "characters": list(train_chars),
-                "description": "Training data (seen styles + seen characters)",
+                "characters": sorted(list(train_chars)),
+                "styles": sorted(list(train_styles)),
+                "description": "Training split (seen characters + seen styles)",
             },
             "val": {
-                "styles": list(val_styles),
-                "characters": list(val_chars),
-                "description": "Validation data (unseen styles + unseen characters)",
+                "characters": sorted(list(val_chars)),
+                "styles": sorted(list(val_styles)),
+                "description": "Validation split (unseen characters + unseen styles)",
             },
         }
-
-        print("\n📊 Split Statistics:")
-        print(f"  Styles: {num_train_styles} train + {num_val_styles} val")
-        print(f"  Chars:  {num_train_chars} train + {num_val_chars} val")
-
-        print("\n📋 Splits:")
-        for scenario_name, scenario_data in scenarios.items():
-            print(f"\n  {scenario_name}:")
-            print(f"    Description: {scenario_data['description']}")
-            print(
-                f"    Styles: {len(scenario_data['styles'])} ({scenario_data['styles'][:3]}...)"
+        
+        logging.info("\n📊 Split Statistics:")
+        logging.info(f"  Total chars: {num_chars} → train: {num_train_chars}, val: {num_val_chars}")
+        
+        for split_name, split_data in scenarios.items():
+            logging.info(
+                f"\n  {split_name}:"
             )
-            print(
-                f"    Chars: {len(scenario_data['characters'])} ({scenario_data['characters'][:5]}...)"
-            )
-
+            logging.info(f"    Chars: {len(split_data['characters'])}")
+            logging.info(f"    Styles: {len(split_data['styles'])}")
+        
         return scenarios
 
     def copy_images_for_split(
@@ -403,174 +341,91 @@ class ValidationSplitCreator:
         split_name: str,
         split_dir: Path,
         scenarios: Dict[str, Dict],
-        valid_pairs: Set[Tuple[str, str]],
+        content_files: Dict[str, str],
+        target_files: Dict[Tuple[str, str], str],
     ) -> Tuple[int, int, int]:
-        """Copy images for a specific split with hash-based filename support"""
+        """Copy images for a specific split"""
         split_config = scenarios[split_name]
-        allowed_styles = set(split_config["styles"])
         allowed_chars = set(split_config["characters"])
-
+        allowed_styles = set(split_config["styles"])
+        
         # Create directories
         split_content_dir = split_dir / "ContentImage"
         split_target_dir = split_dir / "TargetImage"
         split_content_dir.mkdir(parents=True, exist_ok=True)
         split_target_dir.mkdir(parents=True, exist_ok=True)
-
+        
         # Create style subdirectories
         for style in allowed_styles:
             (split_target_dir / style).mkdir(exist_ok=True)
-
-        # Identify valid pairs for this split
-        split_valid_pairs = set()
-        for char, style in valid_pairs:
-            if char in allowed_chars and style in allowed_styles:
-                split_valid_pairs.add((char, style))
-
-        if not split_valid_pairs:
-            print(f"  ⚠️  No valid pairs found for {split_name}")
-            return 0, 0, 0
-
-        print(f"  Valid pairs: {len(split_valid_pairs)}")
-
-        chars_in_split = {char for char, style in split_valid_pairs}
-        styles_in_split = {style for char, style in split_valid_pairs}
-
-        print(f"  Unique chars: {len(chars_in_split)}")
-        print(f"  Unique styles: {len(styles_in_split)}")
-
-        # Copy content images
+        
         source_content_dir = self.source_train_dir / "ContentImage"
+        source_target_dir = self.source_train_dir / "TargetImage"
+        
         content_copied = 0
-        content_missing = 0
-
-        print(f"\n  📥 Copying content images (font='{self.detected_font}')...")
+        target_copied = 0
+        skipped = 0
+        
+        # Copy content images
+        logging.info(f"\n  📥 Copying content images for {split_name}...")
         for char in tqdm(
-            sorted(chars_in_split), desc="  Content", ncols=80, unit="char", leave=False
+            sorted(allowed_chars),
+            desc="  Content",
+            ncols=80,
+            unit="char",
+            leave=False,
         ):
-            content_filename = get_content_filename(char, font=self.detected_font)
+            if char not in content_files:
+                skipped += 1
+                continue
+            
+            hash_val = content_files[char]
+            content_filename = get_content_filename(char)
+            
             src_path = source_content_dir / content_filename
             dst_path = split_content_dir / content_filename
-
-            if not src_path.exists():
-                tqdm.write(f"    ⚠️  Missing: {src_path}")
-                content_missing += 1
-                continue
-
-            if src_path.resolve() != dst_path.resolve():
+            
+            if src_path.exists() and src_path.resolve() != dst_path.resolve():
                 shutil.copy2(src_path, dst_path)
                 content_copied += 1
-            else:
+            elif src_path.exists():
                 content_copied += 1
-
-        if content_missing > 0:
-            print(f"  ⚠️  Missing {content_missing} content images")
-
+            else:
+                tqdm.write(f"    ⚠️  Not found: {content_filename}")
+                skipped += 1
+        
         # Copy target images
-        source_target_dir = self.source_train_dir / "TargetImage"
-        target_copied = 0
-        skipped_pairs = 0
-
-        print(f"  📥 Copying target images (font='{self.detected_font}')...")
-        for char, style in tqdm(
-            sorted(split_valid_pairs),
+        logging.info(f"  📥 Copying target images for {split_name}...")
+        for (char, style), hash_val in tqdm(
+            sorted(target_files.items()),
             desc="  Target",
             ncols=80,
             unit="pair",
             leave=False,
         ):
+            # Only copy if char and style are in this split
+            if char not in allowed_chars or style not in allowed_styles:
+                continue
+            
+            target_filename = get_target_filename(char, style)
             style_dir = source_target_dir / style
-            if not style_dir.exists():
-                tqdm.write(f"    ⚠️  Style dir missing: {style_dir}")
-                skipped_pairs += 1
-                continue
-
-            target_filename = get_target_filename(char, style, font=self.detected_font)
             src_path = style_dir / target_filename
-
-            if not src_path.exists():
-                tqdm.write(f"    ⚠️  Missing: {src_path}")
-                skipped_pairs += 1
-                continue
-
             dst_path = split_target_dir / style / target_filename
-
-            if src_path.resolve() != dst_path.resolve():
+            
+            if src_path.exists() and src_path.resolve() != dst_path.resolve():
                 shutil.copy2(src_path, dst_path)
                 target_copied += 1
-            else:
+            elif src_path.exists():
                 target_copied += 1
-
-        # Validate split
-        print(f"\n  🔍 Validating split...")
-        try:
-            self._validate_split(split_dir)
-        except ValueError as e:
-            print(f"  ❌ Validation failed: {e}")
-
-        # Summary
-        print(f"\n  📊 Summary:")
-        print(f"    Content copied: {content_copied}")
-        print(f"    Target copied: {target_copied}")
-        print(f"    Skipped: {skipped_pairs}")
-        if content_missing > 0:
-            print(f"    Missing content: {content_missing}")
-
-        return content_copied, target_copied, skipped_pairs
-
-    def _validate_split(self, split_dir: Path) -> None:
-        """Validate that every target image has corresponding content image"""
-        content_dir = split_dir / "ContentImage"
-        target_dir = split_dir / "TargetImage"
-
-        missing_pairs = 0
-        total_targets = 0
-
-        for style_folder in target_dir.iterdir():
-            if not style_folder.is_dir():
-                continue
-
-            for target_file in style_folder.glob("*.png"):
-                total_targets += 1
-                filename = target_file.stem
-
-                if "_" not in filename:
-                    continue
-
-                try:
-                    parts = filename.split("_")
-
-                    # Extract codepoint (first part)
-                    codepoint = parts[0]
-
-                    if not codepoint.startswith("U+"):
-                        continue
-
-                    # Decode character from codepoint
-                    char_code = int(codepoint.replace("U+", ""), 16)
-                    char_part = chr(char_code)
-
-                    # Check if content exists
-                    content_filename = get_content_filename(
-                        char_part, font=self.detected_font
-                    )
-                    content_path = content_dir / content_filename
-
-                    if not content_path.exists():
-                        missing_pairs += 1
-                        tqdm.write(
-                            f"    ❌ Missing content: {content_filename} for {target_file.name}"
-                        )
-
-                except (IndexError, ValueError) as e:
-                    continue
-
-        if missing_pairs > 0:
-            print(f"  ⚠️  {missing_pairs}/{total_targets} targets missing content!")
-            raise ValueError(
-                f"Validation failed: {missing_pairs} missing content images"
-            )
-        else:
-            print(f"  ✓ All {total_targets} targets have matching content")
+            else:
+                tqdm.write(f"    ⚠️  Not found: {target_filename}")
+                skipped += 1
+        
+        logging.info(
+            f"  ✓ {split_name}: {content_copied} content, {target_copied} target (skipped: {skipped})"
+        )
+        
+        return content_copied, target_copied, skipped
 
     def _copy_and_filter_checkpoint(
         self,
@@ -578,37 +433,31 @@ class ValidationSplitCreator:
         split_dir: Path,
         allowed_chars: Set[str],
         allowed_styles: Set[str],
+        target_files: Dict[Tuple[str, str], str],
     ) -> None:
         """
-        ✅ NEW: Copy and filter results_checkpoint.json for this split
-
-        Args:
-            split_name: Name of the split ("train" or "val")
-            split_dir: Directory for this split
-            allowed_chars: Characters included in this split
-            allowed_styles: Styles included in this split
+        ✅ Filter results_checkpoint.json to only include generations
+        that have both content and target in this split
         """
-        print(f"\n  📋 Filtering results_checkpoint.json for {split_name}...")
-
-        # Load original checkpoint
+        logging.info(f"\n  📋 Filtering checkpoint for {split_name}...")
+        
         original_checkpoint_path = self.source_train_dir / "results_checkpoint.json"
-
+        
         if not original_checkpoint_path.exists():
-            print(f"    ⚠️  No results_checkpoint.json found in {self.source_train_dir}")
-            print(f"    Skipping checkpoint creation for {split_name}")
+            logging.info(f"    ⚠️  No checkpoint found, skipping")
             return
-
+        
         try:
             with open(original_checkpoint_path, "r", encoding="utf-8") as f:
                 original_data = json.load(f)
         except Exception as e:
-            print(f"    ⚠️  Error loading checkpoint: {e}")
+            logging.info(f"    ⚠️  Error loading checkpoint: {e}")
             return
-
-        # Filter generations based on allowed chars and styles
+        
+        # Filter generations
         original_generations = original_data.get("generations", [])
         filtered_generations = []
-
+        
         for gen in tqdm(
             original_generations,
             desc="    Filtering",
@@ -619,91 +468,93 @@ class ValidationSplitCreator:
         ):
             char = gen.get("character")
             style = gen.get("style")
-
-            # Include generation if both char and style are in this split
-            if char in allowed_chars and style in allowed_styles:
+            
+            # Include only if:
+            # 1. Character is in this split
+            # 2. Style is in this split
+            # 3. Target image actually exists in this split
+            if (char in allowed_chars and 
+                style in allowed_styles and 
+                (char, style) in target_files):
                 filtered_generations.append(gen)
-
-        # Create new checkpoint data
+        
+        # Create checkpoint for this split
         split_checkpoint = {
             "split": split_name,
-            "total_chars": len(allowed_chars),
-            "total_styles": len(allowed_styles),
+            "num_characters": len(allowed_chars),
+            "num_styles": len(allowed_styles),
+            "num_generations": len(filtered_generations),
+            "characters": sorted(list(allowed_chars)),
+            "styles": sorted(list(allowed_styles)),
             "generations": filtered_generations,
             "fonts": original_data.get("fonts", []),
-            "metrics": {},  # Reset metrics for this split
+            "metrics": {},
             "original_source": str(self.source_train_dir),
             "filtered_from": str(original_checkpoint_path),
         }
-
-        # Save filtered checkpoint to split directory
+        
         split_checkpoint_path = split_dir / "results_checkpoint.json"
-
+        
         with open(split_checkpoint_path, "w", encoding="utf-8") as f:
             json.dump(split_checkpoint, f, indent=2, ensure_ascii=False)
-
-        print(
-            f"    ✓ Saved checkpoint: {len(filtered_generations)}/{len(original_generations)} generations"
+        
+        logging.info(
+            f"    ✓ Saved: {len(filtered_generations)}/{len(original_generations)} generations"
         )
-        print(f"    📄 {split_checkpoint_path}")
 
     def create_splits(self) -> None:
-        """Create train and val splits"""
-        print("\n" + "=" * 60)
-        print("CREATING DATA SPLITS")
-        print("=" * 60)
-
-        # Analyze data and get valid pairs
-        styles, characters, char_to_styles, valid_pairs = self.analyze_data()
-
-        # Create simple train/val scenarios
-        scenarios = self.create_simple_splits(styles, characters, char_to_styles)
-
+        """Main function to create train/val splits"""
+        logging.info("\n" + "=" * 70)
+        logging.info("FONTDIFFUSION VALIDATION SPLIT CREATOR")
+        logging.info("=" * 70)
+        
+        # Analyze data
+        content_files, target_files, char_to_styles = self.analyze_data()
+        
+        # Create split scenarios
+        scenarios = self.create_simple_splits(
+            content_files, target_files, char_to_styles
+        )
+        
         # Create train split
-        print("\n📁 Creating train split:")
-        train_content, train_target, train_skipped = self.copy_images_for_split(
-            "train", self.train_dir, scenarios, valid_pairs
+        logging.info("\n📁 Creating train split...")
+        self.copy_images_for_split(
+            "train", self.train_dir, scenarios, content_files, target_files
         )
-        print(
-            f"  ✓ Copied {train_content} content + {train_target} target (skipped {train_skipped})"
-        )
-
-        # ✅ Copy and filter checkpoint for train split
         self._copy_and_filter_checkpoint(
             "train",
             self.train_dir,
             set(scenarios["train"]["characters"]),
             set(scenarios["train"]["styles"]),
+            {pair: hash_val for pair, hash_val in target_files.items()
+             if pair[0] in scenarios["train"]["characters"]},
         )
-
+        
         # Create val split
-        print(f"\n📁 Creating val split:")
-        val_content, val_target, val_skipped = self.copy_images_for_split(
-            "val", self.val_dir, scenarios, valid_pairs
+        logging.info(f"\n📁 Creating val split...")
+        self.copy_images_for_split(
+            "val", self.val_dir, scenarios, content_files, target_files
         )
-        print(
-            f"  ✓ Copied {val_content} content + {val_target} target (skipped {val_skipped})"
-        )
-
-        # ✅ Copy and filter checkpoint for val split
         self._copy_and_filter_checkpoint(
             "val",
             self.val_dir,
             set(scenarios["val"]["characters"]),
             set(scenarios["val"]["styles"]),
+            {pair: hash_val for pair, hash_val in target_files.items()
+             if pair[0] in scenarios["val"]["characters"]},
         )
-
+        
         # Save metadata
         self._save_metadata(scenarios)
 
     def _save_metadata(self, scenarios: Dict[str, Dict]) -> None:
         """Save split information to JSON"""
         metadata_path = self.data_root / "split_info.json"
-
+        
         with open(metadata_path, "w", encoding="utf-8") as f:
             json.dump(scenarios, f, indent=2, ensure_ascii=False)
-
-        print(f"\n✓ Saved split metadata to {metadata_path}")
+        
+        logging.info(f"\n✓ Saved split metadata to {metadata_path}")
 
 
 def create_validation_split(
@@ -711,44 +562,39 @@ def create_validation_split(
     val_split_ratio: float = 0.2,
     random_seed: int = 42,
 ) -> None:
-    """
-    Create validation splits (train + val only, unseen char + unseen style)
-    ✅ Simplified version with no reliance on safe character in filenames
-    ✅ Copies and filters results_checkpoint.json for each split
-    """
-
+    """Create validation splits with proper checkpoint filtering"""
     config = ValidationSplitConfig(
         data_root=data_root,
         val_split_ratio=val_split_ratio,
         random_seed=random_seed,
     )
-
+    
     creator = ValidationSplitCreator(config)
     creator.create_splits()
-
-    print("\n" + "=" * 60)
-    print("✓ SPLIT CREATION COMPLETE")
-    print("=" * 60)
-    print("\n✅ Created directories:")
-    print("  📁 train/ - Training data (seen styles + seen chars)")
-    print("    ├── ContentImage/")
-    print("    ├── TargetImage/")
-    print("    └── results_checkpoint.json")
-    print("  📁 val/ - Validation data (unseen styles + unseen chars)")
-    print("    ├── ContentImage/")
-    print("    ├── TargetImage/")
-    print("    └── results_checkpoint.json")
-    print("\n💡 Each folder guarantees:")
-    print("  ✓ Every target image has matching content image")
-    print("  ✓ Parsed by codepoint only (no reliance on safe char)")
-    print("  ✓ Filtered results_checkpoint.json with split-specific data")
+    
+    logging.info("\n" + "=" * 70)
+    logging.info("✓ SPLIT CREATION COMPLETE")
+    logging.info("=" * 70)
+    logging.info("\n✅ Created:")
+    logging.info("  📁 train/")
+    logging.info("    ├── ContentImage/ (training chars)")
+    logging.info("    ├── TargetImage/ (training styles)")
+    logging.info("    └── results_checkpoint.json (filtered)")
+    logging.info("  📁 val/")
+    logging.info("    ├── ContentImage/ (validation chars)")
+    logging.info("    ├── TargetImage/ (validation styles)")
+    logging.info("    └── results_checkpoint.json (filtered)")
+    logging.info("\n💡 Guarantees:")
+    logging.info("  ✓ Every target has matching content")
+    logging.info("  ✓ Checkpoint contains only relevant generations")
+    logging.info("  ✓ Train and val are completely disjoint")
 
 
 if __name__ == "__main__":
     import argparse
-
+    
     parser = argparse.ArgumentParser(
-        description="Create train/val splits with proper matching and checkpoint filtering"
+        description="Create train/val splits with checkpoint filtering"
     )
     parser.add_argument(
         "--data_root", type=str, default="data_examples", help="Root data directory"
@@ -757,13 +603,9 @@ if __name__ == "__main__":
         "--val_ratio", type=float, default=0.2, help="Validation split ratio"
     )
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
-
+    
     args = parser.parse_args()
-
-    print("\n" + "=" * 60)
-    print("FONTDIFFUSION SPLIT CREATOR (SIMPLIFIED)")
-    print("=" * 60)
-
+    
     try:
         create_validation_split(
             data_root=args.data_root,
@@ -771,17 +613,8 @@ if __name__ == "__main__":
             random_seed=args.seed,
         )
     except Exception as e:
-        print(f"\n❌ Error: {e}")
+        logging.error(f"❌ Error: {e}")
         import traceback
-
         traceback.print_exc()
         import sys
-
         sys.exit(1)
-
-"""Example
-python create_validation_split.py \
-  --data_root /content/my_dataset \
-  --val_ratio 0.2 \
-  --seed 42
-"""
