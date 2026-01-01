@@ -281,7 +281,7 @@ class ValidationSplitCreator:
         logging.info(f"  ✓ Found {total_targets} target images")
 
         # Validate content↔target pairing
-        logging.info("\n🔍 Validating content↔target pairs...")
+        logging.info("\n🔍 Validating content ↔ target pairs...")
         valid_pairs: Dict[Tuple[str, str], bool] = {}
         missing_count = 0
 
@@ -325,7 +325,7 @@ class ValidationSplitCreator:
         - Randomly split both characters and styles
         - Only pairs (char, style) where both char and style are in the split are included
         """
-        logging.info("\n" + "=" * 60)
+        logging.info("=" * 60)
         logging.info("CREATING TRAIN/VAL SPLITS (random char & style)")
         logging.info("=" * 60)
 
@@ -384,8 +384,8 @@ class ValidationSplitCreator:
         split_name: str,
         split_dir: Path,
         scenarios: Dict[str, Dict],
-        content_files: Dict[str, str],
-        target_files: Dict[Tuple[str, str], str],
+        content_files: Dict[str, str],  # ✅ char -> actual_hash
+        target_files: Dict[Tuple[str, str], str],  # ✅ (char, style) -> actual_hash
     ) -> Tuple[int, int, int]:
         """Copy images for a specific split"""
         split_config = scenarios[split_name]
@@ -422,12 +422,12 @@ class ValidationSplitCreator:
                 skipped += 1
                 continue
 
-            # ✅ Get the actual hash from content_files (extracted from filename during analyze_data)
+            # ✅ Use the ACTUAL hash extracted during analyze_data()
             actual_hash = content_files[char]
             codepoint = f"U+{ord(char):04X}"
             safe_char = char if char.isprintable() and char not in '<>:"/\\|?*' else ""
             
-            # Reconstruct filename using ACTUAL hash from file
+            # Reconstruct filename using ACTUAL hash
             if safe_char:
                 content_filename = f"{codepoint}_{safe_char}_{actual_hash}.png"
             else:
@@ -436,10 +436,9 @@ class ValidationSplitCreator:
             src_path = source_content_dir / content_filename
             dst_path = split_content_dir / content_filename
 
-            if src_path.exists() and src_path.resolve() != dst_path.resolve():
-                shutil.copy2(src_path, dst_path)
-                content_copied += 1
-            elif src_path.exists():
+            if src_path.exists():
+                if src_path.resolve() != dst_path.resolve():
+                    shutil.copy2(src_path, dst_path)
                 content_copied += 1
             else:
                 tqdm.write(f"    ⚠️  Not found: {content_filename}")
@@ -458,10 +457,11 @@ class ValidationSplitCreator:
             if char not in allowed_chars or style not in allowed_styles:
                 continue
 
-            # ✅ Use ACTUAL hash from target_files (extracted during analyze_data)
+            # ✅ Use the ACTUAL hash extracted during analyze_data()
             codepoint = f"U+{ord(char):04X}"
             safe_char = char if char.isprintable() and char not in '<>:"/\\|?*' else ""
             
+            # Reconstruct filename using ACTUAL hash
             if safe_char:
                 target_filename = f"{codepoint}_{safe_char}_{style}_{actual_hash}.png"
             else:
@@ -471,10 +471,9 @@ class ValidationSplitCreator:
             src_path = style_dir / target_filename
             dst_path = split_target_dir / style / target_filename
 
-            if src_path.exists() and src_path.resolve() != dst_path.resolve():
-                shutil.copy2(src_path, dst_path)
-                target_copied += 1
-            elif src_path.exists():
+            if src_path.exists():
+                if src_path.resolve() != dst_path.resolve():
+                    shutil.copy2(src_path, dst_path)
                 target_copied += 1
             else:
                 tqdm.write(f"    ⚠️  Not found: {target_filename}")
@@ -485,6 +484,7 @@ class ValidationSplitCreator:
         )
 
         return content_copied, target_copied, skipped
+    
     def _copy_and_filter_checkpoint(
         self,
         split_name: str,
