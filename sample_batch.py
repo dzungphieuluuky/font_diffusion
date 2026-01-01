@@ -153,7 +153,36 @@ class FontManager:
 
     def _load_fonts(self, ttf_path: str) -> None:
         """Load font(s) from path"""
-        if os.path.isfile(ttf_path):
+        if "*" in ttf_path:
+            # Handle wildcard path
+            import glob
+
+            font_files: List[str] = glob.glob(ttf_path)
+            if not font_files:
+                raise ValueError(f"No font files found for pattern: {ttf_path}")
+
+            self.font_paths = sorted(font_files)
+
+            logging.info(f"\n{'=' * 60}")
+            logging.info(f"Loading {len(font_files)} fonts from wildcard path...")
+            logging.info("=" * 60)
+
+            for font_path in self.font_paths:
+                font_name: str = os.path.splitext(os.path.basename(font_path))[0]
+                try:
+                    self.fonts[font_name] = {
+                        "path": font_path,
+                        "font": load_ttf(font_path),
+                        "name": font_name,
+                    }
+                    logging.info(f"✓ Loaded: {font_name}")
+                except Exception as e:
+                    logging.info(f"✗ Failed to load {font_name}: {e}")
+
+            logging.info("=" * 60)
+            logging.info(f"Successfully loaded {len(self.fonts)} fonts\n")
+
+        elif os.path.isfile(ttf_path):
             # Single font file
             self.font_paths = [ttf_path]
             font_name: str = os.path.splitext(os.path.basename(ttf_path))[0]
