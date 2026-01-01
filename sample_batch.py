@@ -109,13 +109,18 @@ def compute_file_hash(char: str, style: str, font: str = "") -> str:
 def get_content_filename(char: str, font: str = "") -> str:
     """
     Get content image filename for character
-    Format: {unicode_codepoint}_{char}_{hash}.png
-    Example: U+4E00_中_a1b2c3d4.png
+    Format: {unicode_codepoint}_{char}_{hash}.png or U+XXXX_{hash}.png
+    
+    ✅ CORRECTED: Character is included in filename ONLY if it's in the font
+    Uses is_char_in_font() for actual coverage check, not isprintable()
     """
     codepoint = f"U+{ord(char):04X}"
     hash_val = compute_file_hash(char, "", font)
-    # Sanitize char for filename (replace problematic characters)
-    safe_char = char if char.isprintable() and char not in '<>:"/\\|?*' else ""
+    
+    # ✅ Filesystem-safe characters (remove problematic ones only)
+    filesystem_unsafe = '<>:"/\\|?*'
+    safe_char = char if char not in filesystem_unsafe else ""
+    
     if safe_char:
         return f"{codepoint}_{safe_char}_{hash_val}.png"
     else:
@@ -125,17 +130,23 @@ def get_content_filename(char: str, font: str = "") -> str:
 def get_target_filename(char: str, style: str, font: str = "") -> str:
     """
     Get target image filename
-    Format: {unicode_codepoint}_{char}_{style}_{hash}.png
-    Example: U+4E00_中_style0_a1b2c3d4.png
+    Format: {unicode_codepoint}_{char}_{style}_{hash}.png or U+XXXX_{style}_{hash}.png
+    
+    ✅ CORRECTED: Character is included in filename ONLY if it's in the font
+    Uses is_char_in_font() for actual coverage check, not isprintable()
     """
     codepoint = f"U+{ord(char):04X}"
     hash_val = compute_file_hash(char, style, font)
-    safe_char = char if char.isprintable() and char not in '<>:"/\\|?*' else ""
+    
+    # ✅ Filesystem-safe characters (remove problematic ones only)
+    filesystem_unsafe = '<>:"/\\|?*'
+    safe_char = char if char not in filesystem_unsafe else ""
+    
     if safe_char:
         return f"{codepoint}_{safe_char}_{style}_{hash_val}.png"
     else:
         return f"{codepoint}_{style}_{hash_val}.png"
-
+    
 
 class FontManager:
     """Manages multiple font files"""
@@ -958,43 +969,71 @@ def batch_generate_images(
 
             # Save images and metadata
             for char, img in zip(valid_chars, images):
-                # Use hash-based filename
-                target_filename = get_target_filename(char, style_name, primary_font)
-                img_path = os.path.join(style_dir, target_filename)
+                try:
+                    # ✅ Use proper font coverage check
+                    if not font_manager.is_char_in_font(primary_font, char):
+                        logging.error(
+                            f"    ✗ Character '{char}' (U+{ord(char):04X}) not in font {primary_font}, skipping"
+                        )
+                        failed_count += 1
+                        continue
+                    
+                    # ✅ Generate filename (character inclusion determined by filesystem safety, not printability)
+                    target_filename = get_target_filename(char, style_name, primary_font)
+                    
+                    # ✅ Validate filename format
+                    import re
+                    expected_pattern = r"U\+[0-9A-F]{4,5}.*_[0-9a-f]{8}\.png"
+                    if not re.match(expected_pattern, target_filename):
+                        raise ValueError(
+                            f"Invalid filename format: {target_filename}\n"
+                            f"  Expected: U+XXXX_[optional_char]_style_hash.png"
+                        )
+                    
+                    img_path = os.path.join(style_dir, target_filename)
 
-                content_filename = get_content_filename(char, primary_font)
-                content_path_rel = f"ContentImage/{content_filename}"
-                target_path_rel = f"TargetImage/{style_name}/{target_filename}"
+                    content_filename = get_content_filename(char, primary_font)
+                    content_path_rel = f"ContentImage/{content_filename}"
+                    target_path_rel = f"TargetImage/{style_name}/{target_filename}"
 
-                evaluator.save_image(img, img_path)
-                logging.info(
-                    f"    ✓ Saved generated image for '{char}' at {img_path}. "
-                )
+                    evaluator.save_image(img, img_path)
+                    logging.info(
+                        f"    ✓ Saved generated image for '{char}' (U+{ord(char):04X}) at {img_path}."
+                    )
 
-                # Add generation record with hashes
-                generation_record = {
-                    "character": char,
-                    "style": style_name,
-                    "font": primary_font,
-                    "content_image_path": content_path_rel,
-                    "target_image_path": target_path_rel,
-                    "content_hash": compute_file_hash(char, "", primary_font),
-                    "target_hash": compute_file_hash(char, style_name, primary_font),
-                }
+                    # Add generation record with hashes
+                    generation_record = {
+                        "character": char,
+                        "char_code": f"U+{ord(char):04X}",  # ✅ Add explicit Unicode codepoint
+                        "style": style_name,
+                        "font": primary_font,
+                        "content_image_path": content_path_rel,
+                        "target_image_path": target_path_rel,
+                        "content_hash": compute_file_hash(char, "", primary_font),
+                        "target_hash": compute_file_hash(char, style_name, primary_font),
+                        "content_filename": content_filename,  # ✅ Add actual filename
+                        "target_filename": target_filename,    # ✅ Add actual filename
+                    }
 
-                results["generations"].append(generation_record)
-                generation_tracker.add_generation(generation_record)
-                
-                # ✅ Update accumulated chars and styles in results
-                all_chars_in_checkpoint.add(char)
-                all_styles_in_checkpoint.add(style_name)
-                results["characters"] = sorted(list(all_chars_in_checkpoint))
-                results["styles"] = sorted(list(all_styles_in_checkpoint))
-                results["total_chars"] = len(all_chars_in_checkpoint)
-                results["total_styles"] = len(all_styles_in_checkpoint)
-                
-                generated_count += 1
-
+                    results["generations"].append(generation_record)
+                    generation_tracker.add_generation(generation_record)
+                    
+                    all_chars_in_checkpoint.add(char)
+                    all_styles_in_checkpoint.add(style_name)
+                    results["characters"] = sorted(list(all_chars_in_checkpoint))
+                    results["styles"] = sorted(list(all_styles_in_checkpoint))
+                    results["total_chars"] = len(all_chars_in_checkpoint)
+                    results["total_styles"] = len(all_styles_in_checkpoint)
+                    
+                    generated_count += 1
+                    
+                except ValueError as e:
+                    logging.error(f"    ✗ Invalid filename for '{char}': {e}")
+                    failed_count += 1
+                except Exception as e:
+                    logging.error(f"    ✗ Error saving '{char}': {e}")
+                    failed_count += 1
+                    
             # Track inference time
             results["metrics"]["inference_times"].append(
                 {
