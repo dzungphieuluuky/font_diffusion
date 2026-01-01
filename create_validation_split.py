@@ -270,7 +270,16 @@ class ValidationSplitCreator:
                 logging.info(f"    Parts:  {parts} (count: {len(parts)})")
             if len(unparseable_files) > 10:
                 logging.info(f"    ... and {len(unparseable_files) - 10} more")
-        
+
+            # --- Export unparseable files to a txt file ---
+            unparseable_txt_path = self.data_root / "unparseable_files.txt"
+            with open(unparseable_txt_path, "w", encoding="utf-8") as f:
+                for item in unparseable_files:
+                    abs_path = str((self.source_train_dir / "TargetImage" / item["folder"] / item["filename"]).resolve())
+                    f.write(abs_path + "\n")
+            logging.info(f"\n✓ Exported unparseable file list to {unparseable_txt_path}")
+
+
         # ✅ Print style mismatch diagnostics
         if style_mismatch_count > 0:
             logging.info(f"\n⚠️  STYLE MISMATCH DIAGNOSTICS:")
