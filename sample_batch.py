@@ -769,7 +769,7 @@ def generate_content_images(
             char_path: str = os.path.join(content_dir, content_filename)
 
             content_img.save(char_path)
-            print(f"  ✓ Saved content image for '{char}' at {char_path}")
+            print(f"  \n✓ Saved content image for '{char}' at {char_path}")
             char_paths[char] = char_path
         except Exception as e:
             tqdm.write(f"  ✗ Error generating '{char}': {e}")
@@ -1043,13 +1043,13 @@ def sampling_batch_optimized(
             num_batches = (len(content_batch) + batch_size - 1) // batch_size
             batch_pbar = tqdm(
                 range(0, len(content_batch), batch_size),
-                desc=f"  🎨 Inferencing",
-                ncols=100,
+                desc="    🚀 Batch Inference",
+                ncols=120,
                 unit="batch",
-                ascii=True,
                 leave=False,
-                bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]",  # ✅ Removed postfix references
-                colour="blue",
+                dynamic_ncols=True,
+                bar_format="{desc} |{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]",
+                colour="bright_blue",
                 position=2,
             )
             for batch_idx, i in enumerate(batch_pbar):
