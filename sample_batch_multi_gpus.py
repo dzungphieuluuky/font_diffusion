@@ -415,16 +415,27 @@ def create_args_namespace(args: Namespace) -> Namespace:
         default_args: Namespace = parser.parse_args([])
     except Exception:
         default_args: Namespace = Namespace()
+    
+    # Copy all attributes from input args to default_args
     for key, value in vars(args).items():
         setattr(default_args, key, value)
-    if not hasattr(default_args, "style_image_size"):
+    
+    # ✅ ENSURE these are set with proper defaults if missing
+    if not hasattr(default_args, "style_image_size") or default_args.style_image_size is None:
         default_args.style_image_size = (96, 96)
     elif isinstance(default_args.style_image_size, int):
         default_args.style_image_size = (default_args.style_image_size, default_args.style_image_size)
-    if not hasattr(default_args, "content_image_size"):
+    elif isinstance(default_args.style_image_size, (list, tuple)) and len(default_args.style_image_size) == 2:
+        default_args.style_image_size = tuple(default_args.style_image_size)
+    
+    if not hasattr(default_args, "content_image_size") or default_args.content_image_size is None:
         default_args.content_image_size = (96, 96)
     elif isinstance(default_args.content_image_size, int):
         default_args.content_image_size = (default_args.content_image_size, default_args.content_image_size)
+    elif isinstance(default_args.content_image_size, (list, tuple)) and len(default_args.content_image_size) == 2:
+        default_args.content_image_size = tuple(default_args.content_image_size)
+    
+    # ✅ Set other required attributes
     default_args.demo = False
     default_args.character_input = True
     default_args.save_image = True
@@ -441,8 +452,8 @@ def create_args_namespace(args: Namespace) -> Namespace:
     default_args.skip_type = getattr(default_args, "skip_type", "time_uniform")
     default_args.correcting_x0_fn = getattr(default_args, "correcting_x0_fn", None)
     default_args.content_encoder_downsample_size = getattr(default_args, "content_encoder_downsample_size", 3)
+    
     return default_args
-
 
 def save_checkpoint(results: Dict[str, Any], output_dir: str) -> None:
     try:
