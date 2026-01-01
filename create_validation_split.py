@@ -230,6 +230,7 @@ class ValidationSplitCreator:
             for img_file in style_folder.glob("*.png"):
                 parsed = parse_target_filename(img_file.name)
                 
+                # Save parse errors file path for diagnosis
                 if parsed is None:
                     parse_error_count += 1
                     unparseable_files.append({
