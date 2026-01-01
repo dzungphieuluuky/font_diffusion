@@ -448,10 +448,10 @@ class ValidationSplitCreator:
         split_name: str,
         split_dir: Path,
         scenarios: Dict[str, Dict],
-        content_files: Dict[str, str],  # ✅ char -> file_path
-        target_files: Dict[Tuple[str, str], str],  # ✅ (char, style) -> file_path
+        content_files: Dict[str, str],  # ✅ char -> file_path (NOT hash!)
+        target_files: Dict[Tuple[str, str], str],  # ✅ (char, style) -> file_path (NOT hash!)
     ) -> Tuple[int, int, int]:
-        """Copy images for a specific split"""
+        """Copy images for a specific split using ACTUAL file paths"""
         split_config = scenarios[split_name]
         allowed_chars = set(split_config["characters"])
         allowed_styles = set(split_config["styles"])
@@ -480,200 +480,35 @@ class ValidationSplitCreator:
             leave=False,
         ):
             if char not in content_files:
-                tqdm.write(f"    ⚠️  Content image not found for: {char} (U+{ord(char):04X})")
+                tqdm.write(f"    ⚠️  Char not in content_files: {char} (U+{ord(char):04X})")
                 skipped += 1
                 continue
 
-            # ✅ Use actual file path from analyze_data()
+            # ✅ content_files[char] is a FILE PATH, not a hash!
             src_path = Path(content_files[char])
+            
+            if not src_path.exists():
+                tqdm.write(f"    ⚠️  Source not found: {src_path}")
+                skipped += 1
+                continue
+
+            # Use the ACTUAL filename from the file path
             dst_path = split_content_dir / src_path.name
 
-            if src_path.exists():
-                if src_path.resolve() != dst_path.resolve():
-                    try:
-                        shutil.copy2(src_path, dst_path)
-                        content_copied += 1
-                    except Exception as e:
-                        tqdm.write(f"    ⚠️  Error copying {src_path.name}: {e}")
-                        skipped += 1
-                else:
+            if src_path.resolve() != dst_path.resolve():
+                try:
+                    shutil.copy2(src_path, dst_path)
                     content_copied += 1
+                except Exception as e:
+                    tqdm.write(f"    ⚠️  Error copying: {e}")
+                    skipped += 1
             else:
-                tqdm.write(f"    ⚠️  Source not found: {src_path}")
-                skipped += 1
+                # Source and destination are the same
+                content_copied += 1
 
         # Copy target images
         logging.info(f"  📥 Copying target images for {split_name}...")
-        for (char, style) in tqdm(
-            sorted(target_files.keys()),
-            desc="  Target",
-            ncols=80,
-            unit="pair",
-            leave=False,
-        ):
-            # Only copy if char and style are in this split
-            if char not in allowed_chars or style not in allowed_styles:
-                continue
-
-            # ✅ Use actual file path from analyze_data()
-            src_path = Path(target_files[(char, style)])
-            dst_path = split_target_dir / style / src_path.name
-
-            if src_path.exists():
-                if src_path.resolve() != dst_path.resolve():
-                    try:
-                        shutil.copy2(src_path, dst_path)
-                        target_copied += 1
-                    except Exception as e:
-                        tqdm.write(f"    ⚠️  Error copying {src_path.name}: {e}")
-                        skipped += 1
-                else:
-                    target_copied += 1
-            else:
-                tqdm.write(f"    ⚠️  Source not found: {src_path}")
-                skipped += 1
-
-        logging.info(
-            f"  ✓ {split_name}: {content_copied} content, {target_copied} target (skipped: {skipped})"
-        )
-
-        return content_copied, target_copied, skipped
-        
-    def _copy_and_filter_checkpoint(
-        self,
-        split_name: str,
-        split_dir: Path,
-        allowed_chars: Set[str],
-        allowed_styles: Set[str],
-        target_files: Dict[Tuple[str, str], str],
-    ) -> None:
-        """
-        Filter results_checkpoint.json to only include generations
-        that have both content and target in this split
-        """
-        logging.info(f"\n  📋 Filtering checkpoint for {split_name}...")
-
-        original_checkpoint_path = self.source_train_dir / "results_checkpoint.json"
-
-        if not original_checkpoint_path.exists():
-            logging.info(f"    ⚠️  No checkpoint found, skipping")
-            return
-
-        try:
-            with open(original_checkpoint_path, "r", encoding="utf-8") as f:
-                original_data = json.load(f)
-        except Exception as e:
-            logging.info(f"    ⚠️  Error loading checkpoint: {e}")
-            return
-
-        # Filter generations
-        original_generations = original_data.get("generations", [])
-        filtered_generations = []
-
-        for gen in tqdm(
-            original_generations,
-            desc="    Filtering",
-            ncols=80,
-            unit="gen",
-            leave=False,
-            bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]",
-        ):
-            char = gen.get("character")
-            style = gen.get("style")
-
-            # Only include if both char and style are in this split and the (char, style) exists in target_files
-            if (
-                char in allowed_chars
-                and style in allowed_styles
-                and (char, style) in target_files
-            ):
-                filtered_generations.append(gen)
-
-        # Create checkpoint for this split
-        split_checkpoint = {
-            "split": split_name,
-            "num_characters": len(allowed_chars),
-            "num_styles": len(allowed_styles),
-            "num_generations": len(filtered_generations),
-            "characters": sorted(list(allowed_chars)),
-            "styles": sorted(list(allowed_styles)),
-            "generations": filtered_generations,
-            "fonts": original_data.get("fonts", []),
-            "metrics": {},
-            "original_source": str(self.source_train_dir),
-            "filtered_from": str(original_checkpoint_path),
-        }
-
-        split_checkpoint_path = split_dir / "results_checkpoint.json"
-
-        with open(split_checkpoint_path, "w", encoding="utf-8") as f:
-            json.dump(split_checkpoint, f, indent=2, ensure_ascii=False)
-
-        logging.info(
-            f"    ✓ Saved: {len(filtered_generations)}/{len(original_generations)} generations"
-        )
-
-    def copy_images_for_split(
-        self,
-        split_name: str,
-        split_dir: Path,
-        scenarios: Dict[str, Dict],
-        content_files: Dict[str, str],
-        target_files: Dict[Tuple[str, str], str],
-    ) -> Tuple[int, int, int]:
-        """Copy images for a specific split"""
-        split_config = scenarios[split_name]
-        allowed_chars = set(split_config["characters"])
-        allowed_styles = set(split_config["styles"])
-
-        # Create directories
-        split_content_dir = split_dir / "ContentImage"
-        split_target_dir = split_dir / "TargetImage"
-        split_content_dir.mkdir(parents=True, exist_ok=True)
-        split_target_dir.mkdir(parents=True, exist_ok=True)
-
-        # Create style subdirectories
-        for style in allowed_styles:
-            (split_target_dir / style).mkdir(exist_ok=True)
-
-        source_content_dir = self.source_train_dir / "ContentImage"
-        source_target_dir = self.source_train_dir / "TargetImage"
-
-        content_copied = 0
-        target_copied = 0
-        skipped = 0
-
-        # Copy content images
-        logging.info(f"\n  📥 Copying content images for {split_name}...")
-        for char in tqdm(
-            sorted(allowed_chars),
-            desc="  Content",
-            ncols=80,
-            unit="char",
-            leave=False,
-        ):
-            if char not in content_files:
-                skipped += 1
-                continue
-
-            hash_val = content_files[char]
-            content_filename = get_content_filename(char)
-
-            src_path = source_content_dir / content_filename
-            dst_path = split_content_dir / content_filename
-
-            if src_path.exists() and src_path.resolve() != dst_path.resolve():
-                shutil.copy2(src_path, dst_path)
-                content_copied += 1
-            elif src_path.exists():
-                content_copied += 1
-            else:
-                tqdm.write(f"    ⚠️  Not found: {content_filename}")
-                skipped += 1
-
-        # Copy target images
-        logging.info(f"  📥 Copying target images for {split_name}...")
-        for (char, style), hash_val in tqdm(
+        for (char, style), target_path_str in tqdm(
             sorted(target_files.items()),
             desc="  Target",
             ncols=80,
@@ -684,26 +519,35 @@ class ValidationSplitCreator:
             if char not in allowed_chars or style not in allowed_styles:
                 continue
 
-            target_filename = get_target_filename(char, style)
-            style_dir = source_target_dir / style
-            src_path = style_dir / target_filename
-            dst_path = split_target_dir / style / target_filename
-
-            if src_path.exists() and src_path.resolve() != dst_path.resolve():
-                shutil.copy2(src_path, dst_path)
-                target_copied += 1
-            elif src_path.exists():
-                target_copied += 1
-            else:
-                tqdm.write(f"    ⚠️  Not found: {target_filename}")
+            # ✅ target_files[(char, style)] is a FILE PATH, not a hash!
+            src_path = Path(target_path_str)
+            
+            if not src_path.exists():
+                tqdm.write(f"    ⚠️  Source not found: {src_path}")
                 skipped += 1
+                continue
+
+            # Use the ACTUAL filename from the file path
+            dst_path = split_target_dir / style / src_path.name
+
+            if src_path.resolve() != dst_path.resolve():
+                try:
+                    shutil.copy2(src_path, dst_path)
+                    target_copied += 1
+                except Exception as e:
+                    tqdm.write(f"    ⚠️  Error copying: {e}")
+                    skipped += 1
+            else:
+                # Source and destination are the same
+                target_copied += 1
 
         logging.info(
-            f"  ✓ {split_name}: {content_copied} content, {target_copied} target (skipped: {skipped})"
+            f"  ✓ {split_name}: {content_copied:,} content, {target_copied:,} target (skipped: {skipped})"
         )
 
         return content_copied, target_copied, skipped
 
+    
     def _copy_and_filter_checkpoint(
         self,
         split_name: str,
@@ -778,8 +622,48 @@ class ValidationSplitCreator:
             json.dump(split_checkpoint, f, indent=2, ensure_ascii=False)
 
         logging.info(
-            f"    ✓ Saved: {len(filtered_generations)}/{len(original_generations)} generations"
+            f"    ✓ Saved: {len(filtered_generations):,}/{len(original_generations):,} generations"
         )
+    
+    def debug_parse_errors(
+        self,
+    ) -> None:
+        """Debug which files are failing to parse"""
+        logging.info("\n" + "=" * 70)
+        logging.info("🔍 DEBUGGING PARSE ERRORS")
+        logging.info("=" * 70)
+
+        target_dir: Path = self.source_train_dir / "TargetImage"
+        
+        unparseable_files = []
+        
+        for style_folder in target_dir.iterdir():
+            if not style_folder.is_dir():
+                continue
+
+            style_name = style_folder.name
+
+            for img_file in sorted(style_folder.glob("*.png")):
+                parsed = parse_target_filename(img_file.name)
+                
+                if parsed is None:
+                    unparseable_files.append({
+                        "folder": style_name,
+                        "filename": img_file.name,
+                    })
+
+        logging.info(f"\nUnparseable files: {len(unparseable_files)}")
+        
+        if unparseable_files:
+            logging.info("\nSample unparseable files:")
+            for item in unparseable_files[:10]:
+                logging.info(f"  Folder: {item['folder']}")
+                logging.info(f"  File:   {item['filename']}")
+                
+                # Try to understand the format
+                stem = item['filename'][:-4]
+                parts = stem.split("_")
+                logging.info(f"  Parts: {parts} (count: {len(parts)})")
 
     def create_splits(self) -> None:
         """Main function to create train/val splits"""
@@ -853,6 +737,7 @@ def create_validation_split(
     )
 
     creator = ValidationSplitCreator(config)
+    creator.debug_parse_errors()
     creator.create_splits()
 
     logging.info("\n" + "=" * 70)
