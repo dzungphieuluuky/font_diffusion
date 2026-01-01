@@ -650,6 +650,12 @@ def create_args_namespace(args: Namespace, accelerator: Optional[Accelerator] = 
         logging.warning("content_image_size must be positive, using (96, 96)")
         default_args.content_image_size = (96, 96)
 
+    # ✅ Log the final confirmed values
+    if accelerator and accelerator.is_main_process:
+        logging.info(f"\n✅ Image size configuration:")
+        logging.info(f"   style_image_size:   {default_args.style_image_size} (type: {type(default_args.style_image_size).__name__})")
+        logging.info(f"   content_image_size: {default_args.content_image_size} (type: {type(default_args.content_image_size).__name__})")
+
     # Set required attributes
     default_args.demo = False
     default_args.character_input = True
@@ -663,7 +669,7 @@ def create_args_namespace(args: Namespace, accelerator: Optional[Accelerator] = 
         default_args, "algorithm_type", "dpmsolver++"
     )
     default_args.guidance_type = getattr(
-        default_args, "guidance_type", "classifier-free"  # ✅ ADDED
+        default_args, "guidance_type", "classifier-free"
     )
     default_args.method = getattr(default_args, "method", "multistep")
     default_args.order = getattr(default_args, "order", 2)
@@ -675,12 +681,6 @@ def create_args_namespace(args: Namespace, accelerator: Optional[Accelerator] = 
     default_args.content_encoder_downsample_size = getattr(
         default_args, "content_encoder_downsample_size", 3
     )
-
-    # ✅ Only log if we have accelerator and are on main process
-    if accelerator and accelerator.is_main_process:
-        logging.info(f"\n✅ Image size configuration:")
-        logging.info(f"   style_image_size:   {default_args.style_image_size}")
-        logging.info(f"   content_image_size: {default_args.content_image_size}")
 
     return default_args
 
@@ -1019,7 +1019,6 @@ def sampling_batch_optimized(
             available_chars,
             desc=f"  📸 Preparing {font_name}",
             colour="cyan",
-            # ✅ REMOVED: disable=not torch.cuda.is_available()
         ):
             try:
                 content_image: Image.Image = ttf2im(font=font, char=char)
@@ -1049,6 +1048,14 @@ def sampling_batch_optimized(
             all_images: List[Image.Image] = []
             batch_size: int = args.batch_size
 
+            # ✅ Ensure dm_size is a tuple
+            if isinstance(args.content_image_size, int):
+                dm_size: Tuple[int, int] = (args.content_image_size, args.content_image_size)
+            elif isinstance(args.content_image_size, (list, tuple)):
+                dm_size: Tuple[int, int] = tuple(args.content_image_size)
+            else:
+                dm_size: Tuple[int, int] = (96, 96)
+
             num_batches = (len(content_batch) + batch_size - 1) // batch_size
             batch_pbar = tqdm(
                 range(0, len(content_batch), batch_size),
@@ -1069,7 +1076,7 @@ def sampling_batch_optimized(
                     content_encoder_downsample_size=args.content_encoder_downsample_size,
                     t_start=args.t_start,
                     t_end=args.t_end,
-                    dm_size=args.content_image_size,
+                    dm_size=dm_size,  # ✅ Pass as tuple
                     algorithm_type=args.algorithm_type,
                     skip_type=args.skip_type,
                     method=args.method,
@@ -1088,7 +1095,7 @@ def sampling_batch_optimized(
         import traceback
         traceback.print_exc()
         return None, None, None
-
+    
 def _print_checkpoint_status(
     current_style: int,
     total_styles: int,
