@@ -5,6 +5,85 @@ import torch
 from safetensors.torch import save_file
 import shutil
 from huggingface_hub.utils import tqdm
+from typing import Any, Dict
+
+# ============================================================================
+# TQDM CONFIGURATION - Reusable across the file
+# ============================================================================
+
+def get_tqdm_config(
+    total: Optional[int] = None,
+    desc: str = "",
+    unit: str = "it",
+    ncols: int = 100,
+    unit_scale: bool = True,
+    unit_divisor: int = 1000,
+) -> Dict[str, Any]:
+    """
+    Get standardized tqdm configuration
+    
+    ✅ unit_scale=True: Automatically scales to KB, MB, GB, etc.
+    ✅ total: Number of items (from loop)
+    ✅ Updates automatically as items are processed
+    
+    Args:
+        total: Total number of items to process
+        desc: Description/label for the progress bar
+        unit: Unit name (default: "it" for items)
+        ncols: Width of progress bar (default: 100)
+        unit_scale: Enable automatic scaling (default: True)
+        unit_divisor: Divisor for unit scaling (1000 for decimal, 1024 for binary)
+    
+    Returns:
+        Dict of tqdm configuration that can be unpacked with **
+    
+    Example:
+        for item in tqdm(items, **get_tqdm_config(
+            total=len(items),
+            desc="Processing",
+            unit="item"
+        )):
+            # process item
+            pass
+    """
+    config = {
+        "total": total,
+        "desc": desc,
+        "unit": unit,
+        "ncols": ncols,
+        "unit_scale": unit_scale,
+        "unit_divisor": unit_divisor,
+        "leave": True,
+        "dynamic_ncols": True,
+    }
+    return {k: v for k, v in config.items() if v is not None}
+
+
+# Preset configurations for common scenarios
+TQDM_IMAGE_LOADING = {
+    "desc": "Loading images",
+    "unit": "img",
+    "ncols": 100,
+    "unit_scale": True,
+    "unit_divisor": 1000,
+}
+
+TQDM_GENERATION_PAIR = {
+    "desc": "Processing pairs",
+    "unit": "pair",
+    "ncols": 100,
+    "unit_scale": True,
+    "unit_divisor": 1000,
+}
+
+TQDM_FILE_IO = {
+    "desc": "Processing files",
+    "unit": "file",
+    "ncols": 100,
+    "unit_scale": True,
+    "unit_divisor": 1024,  # Binary divisor for file sizes
+}
+
 
 def flatten_folder(root_dir):
     """

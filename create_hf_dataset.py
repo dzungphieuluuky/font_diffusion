@@ -17,7 +17,11 @@ from PIL import Image as PILImage
 import pyarrow.parquet as pq
 from huggingface_hub.utils import tqdm
 
+from utilities import get_tqdm_config
 
+# ============================================================================
+# UTILITY FUNCTIONS
+# ============================================================================
 
 def compute_file_hash(char: str, style: str, font: str = "") -> str:
     """
@@ -38,13 +42,18 @@ def compute_file_hash(char: str, style: str, font: str = "") -> str:
 def get_content_filename(char: str, font: str = "") -> str:
     """
     Get content image filename for character
-    Format: {unicode_codepoint}_{char}_{hash}.png
+    Format: {unicode_codepoint}_{char}_{hash}.png or U+XXXX_{hash}.png
     Example: U+4E00_中_a1b2c3d4.png
+    
+    ✅ CORRECTED: Uses filesystem safety check, not isprintable()
     """
     codepoint = f"U+{ord(char):04X}"
     hash_val = compute_file_hash(char, "", font)
-    # Sanitize char for filename (replace problematic characters)
-    safe_char = char if char.isprintable() and char not in '<>:"/\\|?*' else ""
+    
+    # ✅ Filesystem-safe characters (remove problematic ones only)
+    filesystem_unsafe = '<>:"/\\|?*'
+    safe_char = char if char not in filesystem_unsafe else ""
+    
     if safe_char:
         return f"{codepoint}_{safe_char}_{hash_val}.png"
     else:
@@ -54,17 +63,27 @@ def get_content_filename(char: str, font: str = "") -> str:
 def get_target_filename(char: str, style: str, font: str = "") -> str:
     """
     Get target image filename
-    Format: {unicode_codepoint}_{char}_{style}_{hash}.png
+    Format: {unicode_codepoint}_{char}_{style}_{hash}.png or U+XXXX_{style}_{hash}.png
     Example: U+4E00_中_style0_a1b2c3d4.png
+    
+    ✅ CORRECTED: Uses filesystem safety check, not isprintable()
     """
     codepoint = f"U+{ord(char):04X}"
     hash_val = compute_file_hash(char, style, font)
-    safe_char = char if char.isprintable() and char not in '<>:"/\\|?*' else ""
+    
+    # ✅ Filesystem-safe characters (remove problematic ones only)
+    filesystem_unsafe = '<>:"/\\|?*'
+    safe_char = char if char not in filesystem_unsafe else ""
+    
     if safe_char:
         return f"{codepoint}_{safe_char}_{style}_{hash_val}.png"
     else:
         return f"{codepoint}_{style}_{hash_val}.png"
 
+
+# ============================================================================
+# MAIN CLASS
+# ============================================================================
 
 @dataclass
 class FontDiffusionDatasetConfig:
@@ -138,7 +157,16 @@ class FontDiffusionDatasetBuilder:
 
         print(f"\n🖼️  Loading {len(generations)} image pairs...")
 
-        for gen in tqdm(generations, desc="Loading images", ncols=100, unit="pair"):
+        # ✅ Use standardized tqdm config with total from loop
+        for gen in tqdm(
+            generations,
+            total=len(generations),
+            **get_tqdm_config(
+                total=len(generations),
+                desc="Loading image pairs",
+                unit="pair",
+            )
+        ):
             char = gen.get("character")
             style = gen.get("style")
             font = gen.get("font", "unknown")
@@ -149,11 +177,11 @@ class FontDiffusionDatasetBuilder:
 
             # Verify files exist
             if not content_path.exists():
-                tqdm.write(f"⚠ Missing content: {content_path}")
+                tqdm.write(f"⚠️  Missing content: {content_path}")
                 continue
 
             if not target_path.exists():
-                tqdm.write(f"⚠ Missing target: {target_path}")
+                tqdm.write(f"⚠️  Missing target: {target_path}")
                 continue
 
             # Load images
@@ -161,7 +189,9 @@ class FontDiffusionDatasetBuilder:
                 content_image = PILImage.open(content_path).convert("RGB")
                 target_image = PILImage.open(target_path).convert("RGB")
             except Exception as e:
-                tqdm.write(f"⚠ Error loading pair ({char}, {style}): {e}")
+                tqdm.write(
+                    f"⚠️  Error loading pair ({char}, {style}): {e}"
+                )
                 continue
 
             row = {
@@ -233,6 +263,10 @@ class FontDiffusionDatasetBuilder:
         dataset.save_to_disk(output_path)
         print(f"✓ Saved!")
 
+
+# ============================================================================
+# ENTRY POINT
+# ============================================================================
 
 def create_and_push_dataset(
     data_dir: str,

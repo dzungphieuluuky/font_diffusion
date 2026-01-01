@@ -25,7 +25,7 @@ import torchvision.transforms as transforms
 from argparse import Namespace, ArgumentParser
 
 from src.dpm_solver.pipeline_dpm_solver import FontDiffuserDPMPipeline
-
+from utilities import *
 
 class TqdmLoggingHandler(logging.Handler):
     def emit(self, record):
@@ -622,6 +622,7 @@ def load_characters(
 
         for line_num, line in tqdm(
             enumerate(all_lines[start_idx:end_idx], start=start_line),
+            **TQDM_FILE_IO,
             total=(end_idx - start_idx),
             desc="📖 Reading character file",
             colour="green",
@@ -674,6 +675,7 @@ def load_style_images(style_images_arg: str) -> List[Tuple[str, str]]:
         verified_paths = []
         for path in tqdm(
             style_paths,
+            **TQDM_FILE_IO,
             desc="✓ Verifying style images",
             colour="green",
         ):
@@ -801,6 +803,7 @@ def generate_content_images(
 
     for char in tqdm(
         characters,
+        **TQDM_GENERATION_PAIR,
         desc="📸 Generating content images",
         colour="magenta",
     ):
@@ -930,6 +933,7 @@ def batch_generate_images(
     # Main generation loop
     for style_idx, (style_path, style_name) in tqdm(
         enumerate(style_paths_with_names),
+        **TQDM_GENERATION_PAIR,
         total=len(style_paths_with_names),
         desc="🎨 Generating styles",
     ):
@@ -1033,7 +1037,7 @@ def batch_generate_images(
                 except Exception as e:
                     logging.error(f"    ✗ Error saving '{char}': {e}")
                     failed_count += 1
-                    
+
             # Track inference time
             results["metrics"]["inference_times"].append(
                 {
@@ -1111,6 +1115,7 @@ def sampling_batch_optimized(
 
         for char in tqdm(
             available_chars,
+            **TQDM_FILE_IO,
             desc=f"  📸 Preparing {font_name}",
             colour="cyan",
         ):
@@ -1145,6 +1150,7 @@ def sampling_batch_optimized(
             num_batches = (len(content_batch) + batch_size - 1) // batch_size
             batch_pbar = tqdm(
                 range(0, len(content_batch), batch_size),
+                **TQDM_GENERATION_PAIR,
                 desc="    🚀 Batch Inference",
                 colour="#1055C9",
             )
@@ -1260,6 +1266,7 @@ def evaluate_results(
     # Evaluate each generation
     for gen in tqdm(
         results["generations"],
+        **TQDM_IMAGE_LOADING,
         desc="📊 Evaluating",
         colour="green",
     ):
