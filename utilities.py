@@ -3,6 +3,30 @@ from pathlib import Path
 from typing import Optional
 import torch
 from safetensors.torch import save_file
+import shutil
+
+def flatten_folder(root_dir):
+    """
+    Moves all files from subdirectories of root_dir into root_dir.
+    """
+    for subdir, dirs, files in os.walk(root_dir):
+        if subdir == root_dir:
+            continue  # Skip the root directory itself
+        for file in files:
+            src = os.path.join(subdir, file)
+            dst = os.path.join(root_dir, file)
+            # If a file with the same name exists, rename to avoid overwrite
+            if os.path.exists(dst):
+                base, ext = os.path.splitext(file)
+                i = 1
+                while os.path.exists(os.path.join(root_dir, f"{base}_{i}{ext}")):
+                    i += 1
+                dst = os.path.join(root_dir, f"{base}_{i}{ext}")
+            shutil.move(src, dst)
+    # Optionally, remove empty subdirectories
+    for subdir, dirs, files in os.walk(root_dir, topdown=False):
+        if subdir != root_dir and not os.listdir(subdir):
+            os.rmdir(subdir)
 
 
 def print_font_glyph_counts(fonts_dir: str):
@@ -26,7 +50,7 @@ def print_font_glyph_counts(fonts_dir: str):
             font = TTFont(font_path)
             cmap = font.getBestCmap()
             num_glyphs = len(cmap)
-            font_name = os.path.splitext(os.path.basename(font_path))[0]
+            font_name = os.path.splitext(os.path.basename(font_path))
             print(f"  {font_name}: {num_glyphs} glyphs")
         except Exception as e:
             print(f"  {font_path}: Failed to read ({e})")
@@ -82,3 +106,43 @@ def convert_checkpoint_folder(
 
     print(f"\n✓ Conversion complete!")
     return output_dir
+
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Utility functions for font diffusion project"
+    )
+    parser.add_argument(
+        "--flatten_dir",
+        type=str,
+        help="Path to directory to flatten (move all files from subdirs to root)",
+    )
+    parser.add_argument(
+        "--font_glyphs_dir",
+        type=str,
+        help="Path to directory containing fonts to print glyph counts",
+    )
+    parser.add_argument(
+        "--convert_ckpt_dir",
+        type=str,
+        help="Path to directory containing .pth checkpoints to convert to .safetensors",
+    )
+    parser.add_argument(
+        "--output_dir",
+        type=str,
+        default=None,
+        help="Output directory for converted safetensors (if not specified, uses input dir)",
+    )
+
+    args = parser.parse_args()
+
+    if args.flatten_dir:
+        flatten_folder(args.flatten_dir)
+        print(f"✓ Flattened directory: {args.flatten_dir}")
+
+    if args.font_glyphs_dir:
+        print_font_glyph_counts(args.font_glyphs_dir)
+
+    if args.convert_ckpt_dir:
+        convert_checkpoint_folder(args.convert_ckpt_dir, args.output_dir)
