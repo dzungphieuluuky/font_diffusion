@@ -135,7 +135,7 @@ def parse_target_filename(filename: str) -> Optional[Tuple[str, str, str]]:
         # parts[-1] = hash
         
         # Extract style (everything after char, before hash)
-        style_parts = parts[2:-1]
+        style_parts = parts[2:4]
         
         if not style_parts:  # No style found
             return None
