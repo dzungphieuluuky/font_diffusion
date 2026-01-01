@@ -14,7 +14,7 @@ import hashlib
 import argparse
 from pathlib import Path
 from typing import List, Dict, Tuple, Optional, Any, Set, Union
-from tqdm import tqdm
+from tqdm.auto import tqdm
 import logging
 
 import numpy as np
@@ -44,10 +44,10 @@ logging.basicConfig(
 )
 
 HF_TQDM_CONFIG = {
-    "ncols": 120,  # Increased length for better visibility
-    "ascii": False,
-    "bar_format": "🚀 {l_bar}{bar}| {n_fmt}/{total_fmt} | {percentage:3.0f}% [{elapsed}<{remaining}, {rate_fmt}]",
-    "colour": "#2196f3",  # A nice vibrant blue
+    "ncols": 100,
+    "ascii": False,  # Uses smooth unicode blocks
+    "bar_format": "{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}{postfix}]",
+    "colour": "#4caf50",  # Professional Green
 }
 
 # Import evaluation metrics
@@ -886,12 +886,7 @@ def batch_generate_images(
         enumerate(style_paths_with_names),
         total=len(style_paths_with_names),
         desc="🎨 Generating styles",
-        ncols=120,
-        bar_format="{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [⏱️ {elapsed}<{remaining}, {rate_fmt}]",
-        colour="magenta",
-        dynamic_ncols=True,
-        position=0,
-        leave=True,
+        **HF_TQDM_CONFIG,
     ):
         style_dir = os.path.join(target_base_dir, style_name)
         os.makedirs(style_dir, exist_ok=True)
