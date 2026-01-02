@@ -6,11 +6,25 @@ from safetensors.torch import save_file
 import shutil
 from huggingface_hub.utils import tqdm
 from typing import Any, Dict
+import logging
+import json
+import os
 
-# ============================================================================
-# TQDM CONFIGURATION - Reusable across the file
-# ============================================================================
+class TqdmLoggingHandler(logging.Handler):
+    def emit(self, record):
+        try:
+            msg = self.format(record)
+            tqdm.write(msg)
+            self.flush()
+        except Exception:
+            self.handleError(record)
 
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(message)s",
+    handlers=[TqdmLoggingHandler()],
+)
 
 def get_tqdm_config(
     total: Optional[int] = None,
@@ -81,11 +95,6 @@ TQDM_FILE_IO = {
     "unit_scale": True,
     "unit_divisor": 1024,  # Binary divisor for file sizes
 }
-
-
-import json
-import os
-
 
 def rename_images(json_file):
     # Load the JSON data

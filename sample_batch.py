@@ -27,23 +27,6 @@ from argparse import Namespace, ArgumentParser
 from src.dpm_solver.pipeline_dpm_solver import FontDiffuserDPMPipeline
 from utilities import *
 
-
-class TqdmLoggingHandler(logging.Handler):
-    def emit(self, record):
-        try:
-            msg = self.format(record)
-            tqdm.write(msg)
-            self.flush()
-        except Exception:
-            self.handleError(record)
-
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(message)s",
-    handlers=[TqdmLoggingHandler()],
-)
-
 enable_progress_bars()
 # Import evaluation metrics
 try:
