@@ -1,297 +1,315 @@
 """
-Export Hugging Face dataset back to original FontDiffusion directory structure
-✅ Uses hash-based file naming with unicode characters
-✅ Preserves results_checkpoint.json as single source of truth
+Export Hugging Face dataset back to FontDiffusion directory structure.
+
+This module reconstructs the original directory layout from a HuggingFace dataset,
+preserving results_checkpoint.json as the single source of truth.
 """
 
-from pathlib import Path
-from typing import Optional, Dict, Any
+import json
+import logging
 from dataclasses import dataclass
-import hashlib
+from pathlib import Path
+from typing import Any, Optional
 
 from datasets import Dataset, load_dataset
-from PIL import Image as PILImage
-from huggingface_hub.utils import tqdm
-import json
-import os
+from PIL import Image
+from tqdm.auto import tqdm
 
-from filename_utils import get_content_filename, get_target_filename, compute_file_hash
+from filename_utils import compute_file_hash, get_content_filename, get_target_filename
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+)
+logger = logging.getLogger(__name__)
 
 
 @dataclass
 class ExportConfig:
-    """Configuration for dataset export"""
-
-    output_dir: str
+    """Configuration for dataset export."""
+    
+    output_dir: Path
     repo_id: Optional[str] = None
-    local_dataset_path: Optional[str] = None
+    local_dataset_path: Optional[Path] = None
     split: str = "train"
     token: Optional[str] = None
+    
+    def __post_init__(self):
+        """Validate and convert paths."""
+        if isinstance(self.output_dir, str):
+            self.output_dir = Path(self.output_dir)
+        if isinstance(self.local_dataset_path, str):
+            self.local_dataset_path = Path(self.local_dataset_path)
+            
+        if not self.repo_id and not self.local_dataset_path:
+            raise ValueError(
+                "Must provide either repo_id (Hub) or local_dataset_path (disk)"
+            )
 
 
 class DatasetExporter:
-    """Export Hugging Face dataset to disk"""
-
+    """Export HuggingFace dataset to FontDiffusion directory structure."""
+    
     def __init__(self, config: ExportConfig):
+        """Initialize the exporter.
+        
+        Args:
+            config: Export configuration
+        """
         self.config = config
-        self.output_dir = Path(config.output_dir)
-
-    def export(self) -> Dict[str, Any]:
-        """
-        Export dataset from Hub to disk
-
+        self.output_dir = config.output_dir
+        self.content_dir = self.output_dir / "ContentImage"
+        self.target_dir = self.output_dir / "TargetImage"
+        
+    def _load_dataset(self) -> Dataset:
+        """Load dataset from Hub or local disk.
+        
         Returns:
-            metadata: The complete results_checkpoint.json data
+            Loaded dataset
+            
+        Raises:
+            ValueError: If dataset cannot be loaded
         """
-        print("\n" + "=" * 60)
-        print("EXPORTING DATASET TO DISK")
-        print("=" * 60)
-
-        # Load dataset
         if self.config.local_dataset_path:
-            print(f"Loading local dataset from {self.config.local_dataset_path}...")
+            logger.info(f"Loading local dataset from {self.config.local_dataset_path}")
             try:
-                dataset = Dataset.load_from_disk(self.config.local_dataset_path)
-                print(f"✓ Loaded dataset with {len(dataset)} samples")
+                dataset = Dataset.load_from_disk(str(self.config.local_dataset_path))
+                logger.info(f"Loaded {len(dataset)} samples from disk")
+                return dataset
             except Exception as e:
-                raise ValueError(f"Failed to load local dataset: {e}")
-
-        elif self.config.repo_id:
-            print(f"\n📥 Loading dataset from Hub...")
-            print(f"   Repository: {self.config.repo_id}")
-            print(f"   Split: {self.config.split}")
-
-            try:
-                dataset = load_dataset(
-                    self.config.repo_id,
-                    split=self.config.split,
-                    token=self.config.token,
-                )
-                print(f"✓ Loaded dataset with {len(dataset)} samples from Hub")
-
-            except Exception as e:
-                print(f"\n❌ Error loading from Hub:")
-                print(f"   Repository: {self.config.repo_id}")
-                print(f"   Split: {self.config.split}")
-                print(f"   Error: {type(e).__name__}: {e}")
-                raise
-
-        else:
-            raise ValueError(
-                "❌ Must provide either:\n"
-                "   --repo_id (load from Hub)\n"
-                "   --local_dataset_path (load from disk)"
+                raise ValueError(f"Failed to load local dataset: {e}") from e
+                
+        logger.info(
+            f"Loading dataset from Hub: {self.config.repo_id} (split: {self.config.split})"
+        )
+        try:
+            dataset = load_dataset(
+                self.config.repo_id,
+                split=self.config.split,
+                token=self.config.token,
             )
-
-        # Create directory structure
-        content_dir = self.output_dir / "ContentImage"
-        target_base_dir = self.output_dir / "TargetImage"
-
-        content_dir.mkdir(parents=True, exist_ok=True)
-        target_base_dir.mkdir(parents=True, exist_ok=True)
-
-        # Export images and build metadata
-        return self._export_images_and_build_metadata(dataset)
-
-    def _export_images_and_build_metadata(self, dataset: Dataset) -> Dict[str, Any]:
-        """Export images and build metadata"""
-
-        print("\nExporting images from dataset...")
-
-        content_dir = self.output_dir / "ContentImage"
-        target_base_dir = self.output_dir / "TargetImage"
-
-        # Track exported content images to avoid duplicates
+            logger.info(f"Loaded {len(dataset)} samples from Hub")
+            return dataset
+        except Exception as e:
+            raise ValueError(
+                f"Failed to load from Hub {self.config.repo_id}: {e}"
+            ) from e
+            
+    def _create_directories(self) -> None:
+        """Create output directory structure."""
+        self.content_dir.mkdir(parents=True, exist_ok=True)
+        self.target_dir.mkdir(parents=True, exist_ok=True)
+        logger.info(f"Created directory structure at {self.output_dir}")
+        
+    def _export_images(self, dataset: Dataset) -> dict[str, Any]:
+        """Export images and build metadata.
+        
+        Args:
+            dataset: Dataset to export
+            
+        Returns:
+            Complete metadata dictionary for results_checkpoint.json
+        """
+        logger.info("Exporting images...")
+        
         exported_content = set()
-
-        # Build generations list
         generations = []
-
-        # Export images
-        print("\n🎨 Exporting images...")
-        for sample in tqdm(dataset, desc="Exporting", ncols=80):
-            char = sample.get("character")
-            style = sample.get("style")
+        
+        for sample in tqdm(dataset, desc="Exporting images", unit="sample"):
+            char = sample["character"]
+            style = sample["style"]
             font = sample.get("font", "unknown")
-
+            
             # Export content image (once per character)
             content_filename = get_content_filename(char)
-
             if content_filename not in exported_content:
-                if "content_image" in sample:
-                    content_img = sample["content_image"]
-                    if isinstance(content_img, PILImage.Image):
-                        content_path = content_dir / content_filename
-                        content_img.save(str(content_path))
-                        exported_content.add(content_filename)
-
+                content_img = sample.get("content_image")
+                if isinstance(content_img, Image.Image):
+                    content_path = self.content_dir / content_filename
+                    content_img.save(content_path)
+                    exported_content.add(content_filename)
+                    
             # Export target image
-            if "target_image" in sample:
-                style_dir = target_base_dir / style
-                style_dir.mkdir(parents=True, exist_ok=True)
-
+            target_img = sample.get("target_image")
+            if isinstance(target_img, Image.Image):
+                style_dir = self.target_dir / style
+                style_dir.mkdir(exist_ok=True)
                 target_filename = get_target_filename(char, style)
-                target_img = sample["target_image"]
-
-                if isinstance(target_img, PILImage.Image):
-                    target_path = style_dir / target_filename
-                    target_img.save(str(target_path))
-
+                target_path = style_dir / target_filename
+                target_img.save(target_path)
+                
             # Build generation record
-            generations.append(
-                {
-                    "character": char,
-                    "style": style,
-                    "font": font,
-                    "content_image_path": f"ContentImage/{get_content_filename(char)}",
-                    "target_image_path": f"TargetImage/{style}/{get_target_filename(char, style)}",
-                    "content_hash": compute_file_hash(char, "", font),
-                    "target_hash": compute_file_hash(char, style, font),
-                }
-            )
-
-        print(f"✓ Exported {len(exported_content)} content images")
-        print(f"✓ Exported {len(generations)} target images")
-
+            generations.append({
+                "character": char,
+                "style": style,
+                "font": font,
+                "content_image_path": f"ContentImage/{content_filename}",
+                "target_image_path": f"TargetImage/{style}/{get_target_filename(char, style)}",
+                "content_hash": compute_file_hash(char, "", font),
+                "target_hash": compute_file_hash(char, style, font),
+            })
+            
+        logger.info(
+            f"Exported {len(exported_content)} content images, "
+            f"{len(generations)} target images"
+        )
+        
         # Build metadata
-        characters_set = set(g["character"] for g in generations)
-        styles_set = set(g["style"] for g in generations)
-        fonts_set = set(g["font"] for g in generations if g["font"] != "unknown")
-
-        metadata = {
+        characters = sorted({g["character"] for g in generations})
+        styles = sorted({g["style"] for g in generations})
+        fonts = sorted({g["font"] for g in generations if g["font"] != "unknown"})
+        
+        return {
             "generations": generations,
-            "characters": sorted(list(characters_set)),
-            "styles": sorted(list(styles_set)),
-            "fonts": sorted(list(fonts_set)) if fonts_set else ["unknown"],
-            "total_chars": len(characters_set),
-            "total_styles": len(styles_set),
+            "characters": characters,
+            "styles": styles,
+            "fonts": fonts if fonts else ["unknown"],
+            "total_chars": len(characters),
+            "total_styles": len(styles),
         }
-
-        # Save results_checkpoint.json
-        print("\n💾 Saving results_checkpoint.json...")
+        
+    def _save_checkpoint(self, metadata: dict[str, Any]) -> None:
+        """Save results_checkpoint.json.
+        
+        Args:
+            metadata: Metadata dictionary to save
+        """
         checkpoint_path = self.output_dir / "results_checkpoint.json"
-        with open(checkpoint_path, "w", encoding="utf-8") as f:
+        
+        with checkpoint_path.open("w", encoding="utf-8") as f:
             json.dump(metadata, f, indent=2, ensure_ascii=False)
-
-        print(f"  ✓ Saved results_checkpoint.json ({len(generations)} generations)")
-        self._log_metadata_stats(metadata)
-
+            
+        logger.info(
+            f"Saved checkpoint with {len(metadata['generations'])} generations: "
+            f"{len(metadata['characters'])} chars, {len(metadata['styles'])} styles"
+        )
+        
+    def export(self) -> dict[str, Any]:
+        """Execute the full export process.
+        
+        Returns:
+            Complete metadata dictionary
+            
+        Raises:
+            ValueError: If dataset loading or export fails
+        """
+        logger.info("Starting dataset export...")
+        
+        dataset = self._load_dataset()
+        self._create_directories()
+        metadata = self._export_images(dataset)
+        self._save_checkpoint(metadata)
+        
+        logger.info("Export completed successfully")
         return metadata
-
-    def _log_metadata_stats(self, metadata: Dict[str, Any]) -> None:
-        """Log metadata statistics"""
-        print("\n📊 Metadata Statistics:")
-        print(f"  Total generations: {len(metadata.get('generations', []))}")
-        print(f"  Total characters: {metadata.get('total_chars', 0)}")
-        print(f"  Total styles: {metadata.get('total_styles', 0)}")
-        print(f"  Fonts: {', '.join(metadata.get('fonts', ['unknown']))}")
 
 
 def export_dataset(
-    output_dir: str,
+    output_dir: str | Path,
     repo_id: Optional[str] = None,
-    local_dataset_path: Optional[str] = None,
+    local_dataset_path: Optional[str | Path] = None,
     split: str = "train",
     token: Optional[str] = None,
-) -> None:
-    """Export dataset to disk"""
-
+) -> dict[str, Any]:
+    """Export HuggingFace dataset to disk.
+    
+    Args:
+        output_dir: Directory to export to
+        repo_id: HuggingFace repository ID (e.g., 'username/dataset-name')
+        local_dataset_path: Local dataset path (alternative to repo_id)
+        split: Dataset split name (default: 'train')
+        token: HuggingFace API token for private datasets
+        
+    Returns:
+        Metadata dictionary from results_checkpoint.json
+        
+    Raises:
+        ValueError: If neither repo_id nor local_dataset_path is provided,
+                   or if dataset cannot be loaded
+    """
     config = ExportConfig(
-        output_dir=output_dir,
+        output_dir=Path(output_dir),
         repo_id=repo_id,
-        local_dataset_path=local_dataset_path,
+        local_dataset_path=Path(local_dataset_path) if local_dataset_path else None,
         split=split,
         token=token,
     )
-
+    
     exporter = DatasetExporter(config)
-    metadata = exporter.export()
-
-    print("\n" + "=" * 60)
-    print("✅ EXPORT COMPLETE!")
-    print("=" * 60)
-    print(f"\nFiles created:")
-    print(f"  ✓ {output_dir}/ContentImage/")
-    print(f"  ✓ {output_dir}/TargetImage/")
-    print(f"  ✓ {output_dir}/results_checkpoint.json")
+    return exporter.export()
 
 
-if __name__ == "__main__":
+def main():
+    """CLI entry point."""
     import argparse
-    import sys
-
+    
     parser = argparse.ArgumentParser(
-        description="Export Hugging Face dataset to disk",
+        description="Export HuggingFace dataset to FontDiffusion directory structure",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-EXAMPLES:
-
-1. Export from Hub:
-   python export_hf_dataset_to_disk.py \\
-     --output_dir "my_dataset/train" \\
-     --repo_id "dzungpham/font-diffusion-data" \\
-     --split "train"
-
-2. Export from local cache:
-   python export_hf_dataset_to_disk.py \\
-     --output_dir "my_dataset/train" \\
-     --local_dataset_path "~/.cache/huggingface/datasets/.../train"
+Examples:
+  # Export from Hub
+  python export_hf_dataset.py --output-dir ./output --repo-id user/dataset
+  
+  # Export from local cache
+  python export_hf_dataset.py --output-dir ./output --local-path ~/.cache/...
         """,
     )
-
+    
     parser.add_argument(
-        "--output_dir",
+        "--output-dir",
         type=str,
         required=True,
-        help="✅ REQUIRED: Directory to export to",
+        help="Directory to export to",
     )
     parser.add_argument(
-        "--repo_id",
+        "--repo-id",
         type=str,
-        default=None,
-        help="Hugging Face repo ID (e.g., username/dataset-name)",
+        help="HuggingFace repository ID",
     )
     parser.add_argument(
-        "--local_dataset_path",
+        "--local-path",
         type=str,
-        default=None,
-        help="Local dataset path (alternative to --repo_id)",
+        help="Local dataset path (alternative to --repo-id)",
     )
     parser.add_argument(
-        "--split", type=str, default="train", help="Dataset split name (default: train)"
+        "--split",
+        type=str,
+        default="train",
+        help="Dataset split name (default: train)",
     )
     parser.add_argument(
         "--token",
         type=str,
-        default=None,
-        help="Hugging Face token (for private datasets)",
+        help="HuggingFace API token for private datasets",
     )
-
+    
     args = parser.parse_args()
-
-    # Validation
-    if not args.repo_id and not args.local_dataset_path:
-        print("\n" + "=" * 60)
-        print("❌ ERROR: Missing required argument")
-        print("=" * 60)
-        print("\nYou must provide EITHER:")
-        print("  --repo_id          : Load from Hugging Face Hub")
-        print("  --local_dataset_path : Load from local disk")
-        print("=" * 60)
-        sys.exit(1)
-
+    
     try:
-        export_dataset(
+        metadata = export_dataset(
             output_dir=args.output_dir,
             repo_id=args.repo_id,
-            local_dataset_path=args.local_dataset_path,
+            local_dataset_path=args.local_path,
             split=args.split,
             token=args.token,
         )
+        
+        logger.info(
+            f"Successfully exported to {args.output_dir}\n"
+            f"  ContentImage/\n"
+            f"  TargetImage/\n"
+            f"  results_checkpoint.json"
+        )
+        
     except KeyboardInterrupt:
-        print("\n\n⚠️  Export interrupted by user")
-        sys.exit(1)
+        logger.warning("Export interrupted by user")
+        raise SystemExit(130)
     except Exception as e:
-        print(f"\n\n❌ Export failed:")
-        print(f"   {type(e).__name__}: {e}")
-        sys.exit(1)
+        logger.exception(f"Export failed: {e}")
+        raise SystemExit(1)
+
+
+if __name__ == "__main__":
+    main()
