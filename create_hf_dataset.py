@@ -18,70 +18,11 @@ import pyarrow.parquet as pq
 from huggingface_hub.utils import tqdm
 
 from utilities import get_tqdm_config
-
-# ============================================================================
-# UTILITY FUNCTIONS
-# ============================================================================
-
-
-def compute_file_hash(char: str, style: str, font: str = "") -> str:
-    """
-    Compute deterministic hash for a (character, style, font) combination
-
-    Args:
-        char: Unicode character
-        style: Style name
-        font: Font name (optional)
-
-    Returns:
-        8-character hash string
-    """
-    content = f"{char}_{style}_{font}"
-    return hashlib.sha256(content.encode("utf-8")).hexdigest()[:8]
-
-
-def get_content_filename(char: str, font: str = "") -> str:
-    """
-    Get content image filename for character
-    Format: {unicode_codepoint}_{char}_{hash}.png or U+XXXX_{hash}.png
-    Example: U+4E00_中_a1b2c3d4.png
-
-    ✅ CORRECTED: Uses filesystem safety check, not isprintable()
-    """
-    codepoint = f"U+{ord(char):04X}"
-    hash_val = compute_file_hash(char, "", font)
-
-    # ✅ Filesystem-safe characters (remove problematic ones only)
-    filesystem_unsafe = '<>:"/\\|?*'
-    safe_char = char if char not in filesystem_unsafe else ""
-
-    if safe_char:
-        return f"{codepoint}_{safe_char}_{hash_val}.png"
-    else:
-        return f"{codepoint}_{hash_val}.png"
-
-
-def get_target_filename(char: str, style: str, font: str = "") -> str:
-    """
-    Get target image filename
-    Format: {unicode_codepoint}_{char}_{style}_{hash}.png or U+XXXX_{style}_{hash}.png
-    Example: U+4E00_中_style0_a1b2c3d4.png
-
-    ✅ CORRECTED: Uses filesystem safety check, not isprintable()
-    """
-    codepoint = f"U+{ord(char):04X}"
-    hash_val = compute_file_hash(char, style, font)
-
-    # ✅ Filesystem-safe characters (remove problematic ones only)
-    filesystem_unsafe = '<>:"/\\|?*'
-    safe_char = char if char not in filesystem_unsafe else ""
-
-    if safe_char:
-        return f"{codepoint}_{safe_char}_{style}_{hash_val}.png"
-    else:
-        return f"{codepoint}_{style}_{hash_val}.png"
-
-
+from filename_utils import (
+    get_content_filename,
+    get_target_filename,
+    compute_file_hash
+)
 # ============================================================================
 # MAIN CLASS
 # ============================================================================

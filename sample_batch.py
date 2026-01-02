@@ -88,66 +88,17 @@ from sample_optimized import (
     get_content_transform,
     get_style_transform,
 )
-from utils import load_ttf, ttf2im, is_char_in_font
+from utils import (
+    load_ttf,
+    ttf2im,
+    is_char_in_font,
+)
 
-
-def compute_file_hash(char: str, style: str, font: str = "") -> str:
-    """
-    Compute deterministic hash for a (character, style, font) combination
-
-    Args:
-        char: Unicode character
-        style: Style name
-        font: Font name (optional)
-
-    Returns:
-        8-character hash string
-    """
-    content = f"{char}_{style}_{font}"
-    return hashlib.sha256(content.encode("utf-8")).hexdigest()[:8]
-
-
-def get_content_filename(char: str, font: str = "") -> str:
-    """
-    Get content image filename for character
-    Format: {unicode_codepoint}_{char}_{hash}.png or U+XXXX_{hash}.png
-
-    ✅ CORRECTED: Character is included in filename ONLY if it's in the font
-    Uses is_char_in_font() for actual coverage check, not isprintable()
-    """
-    codepoint = f"U+{ord(char):04X}"
-    hash_val = compute_file_hash(char, "", font)
-
-    # ✅ Filesystem-safe characters (remove problematic ones only)
-    filesystem_unsafe = '<>:"/\\|?*'
-    safe_char = char if char not in filesystem_unsafe else ""
-
-    if safe_char:
-        return f"{codepoint}_{safe_char}_{hash_val}.png"
-    else:
-        return f"{codepoint}_{hash_val}.png"
-
-
-def get_target_filename(char: str, style: str, font: str = "") -> str:
-    """
-    Get target image filename
-    Format: {unicode_codepoint}_{char}_{style}_{hash}.png or U+XXXX_{style}_{hash}.png
-
-    ✅ CORRECTED: Character is included in filename ONLY if it's in the font
-    Uses is_char_in_font() for actual coverage check, not isprintable()
-    """
-    codepoint = f"U+{ord(char):04X}"
-    hash_val = compute_file_hash(char, style, font)
-
-    # ✅ Filesystem-safe characters (remove problematic ones only)
-    filesystem_unsafe = '<>:"/\\|?*'
-    safe_char = char if char not in filesystem_unsafe else ""
-
-    if safe_char:
-        return f"{codepoint}_{safe_char}_{style}_{hash_val}.png"
-    else:
-        return f"{codepoint}_{style}_{hash_val}.png"
-
+from filename_utils import (
+    get_content_filename,
+    get_target_filename,
+    compute_file_hash,
+)
 
 class FontManager:
     """Manages multiple font files"""
@@ -824,7 +775,7 @@ def generate_content_images(
 
         try:
             # ✅ Generate expected filename
-            content_filename = get_content_filename(char, found_font)
+            content_filename = get_content_filename(char)
             char_path: str = os.path.join(content_dir, content_filename)
 
             # ✅ Check if content image already exists
@@ -910,10 +861,10 @@ def batch_generate_images(
         "metrics": {"lpips": [], "ssim": [], "inference_times": []},
         "dataset_split": args.dataset_split,
         "fonts": font_manager.get_font_names(),
-        "characters": sorted(list(all_chars_in_checkpoint)),  # ✅ ALL accumulated chars
-        "styles": sorted(list(all_styles_in_checkpoint)),  # ✅ ONLY generated styles
-        "total_chars": len(all_chars_in_checkpoint),  # ✅ ALL accumulated char count
-        "total_styles": len(all_styles_in_checkpoint),  # ✅ ONLY generated style count
+        "characters": sorted(list(all_chars_in_checkpoint)),
+        "styles": sorted(list(all_styles_in_checkpoint)),  
+        "total_chars": len(all_chars_in_checkpoint),
+        "total_styles": len(all_styles_in_checkpoint),
     }
 
     # Setup directories
@@ -1020,7 +971,7 @@ def batch_generate_images(
 
                     img_path = os.path.join(style_dir, target_filename)
 
-                    content_filename = get_content_filename(char, primary_font)
+                    content_filename = get_content_filename(char)
                     content_path_rel = f"ContentImage/{content_filename}"
                     target_path_rel = f"TargetImage/{style_name}/{target_filename}"
 
@@ -1032,7 +983,7 @@ def batch_generate_images(
                     # Add generation record with hashes
                     generation_record = {
                         "character": char,
-                        "char_code": f"U+{ord(char):04X}",  # ✅ Add explicit Unicode codepoint
+                        "char_code": f"U+{ord(char):04X}",  
                         "style": style_name,
                         "font": primary_font,
                         "content_image_path": content_path_rel,
@@ -1041,8 +992,8 @@ def batch_generate_images(
                         "target_hash": compute_file_hash(
                             char, style_name, primary_font
                         ),
-                        "content_filename": content_filename,  # ✅ Add actual filename
-                        "target_filename": target_filename,  # ✅ Add actual filename
+                        "content_filename": content_filename,
+                        "target_filename": target_filename,  
                     }
 
                     results["generations"].append(generation_record)
@@ -1311,7 +1262,7 @@ def evaluate_results(
             continue
 
         # Find ground truth image
-        gt_filename = get_target_filename(char, style, font)
+        gt_filename = get_target_filename(char, style)
         gt_path = os.path.join(ground_truth_dir, "TargetImage", style, gt_filename)
 
         if not os.path.exists(gt_path):

@@ -33,34 +33,11 @@ from utils import (
     save_args_to_yaml,
 )
 
-
-def compute_file_hash(char: str, style: str, font: str = "") -> str:
-    """Compute deterministic hash for a (character, style, font) combination"""
-    content = f"{char}_{style}_{font}"
-    return hashlib.sha256(content.encode("utf-8")).hexdigest()[:8]
-
-
-def get_content_filename(char: str, font: str = "") -> str:
-    """Get content image filename for character"""
-    codepoint = f"U+{ord(char):04X}"
-    hash_val = compute_file_hash(char, "", font)
-    safe_char = char if char.isprintable() and char not in '<>:"/\\|?*' else ""
-    if safe_char:
-        return f"{codepoint}_{safe_char}_{hash_val}.png"
-    else:
-        return f"{codepoint}_{hash_val}.png"
-
-
-def get_target_filename(char: str, style: str, font: str = "") -> str:
-    """Get target image filename"""
-    codepoint = f"U+{ord(char):04X}"
-    hash_val = compute_file_hash(char, style, font)
-    safe_char = char if char.isprintable() and char not in '<>:"/\\|?*' else ""
-    if safe_char:
-        return f"{codepoint}_{safe_char}_{style}_{hash_val}.png"
-    else:
-        return f"{codepoint}_{style}_{hash_val}.png"
-
+from filename_utils import (
+    get_content_filename,
+    get_target_filename,
+    compute_file_hash
+)
 
 def arg_parse() -> Namespace:
     """Parse command line arguments"""
@@ -441,7 +418,7 @@ def sampling_batch(
         os.makedirs(content_dir, exist_ok=True)
 
         for char, pil_img in zip(valid_chars, content_pils):
-            content_filename = get_content_filename(char, font_name)
+            content_filename = get_content_filename(char)
             pil_img.save(os.path.join(content_dir, content_filename))
 
     with torch.no_grad():
@@ -497,7 +474,7 @@ def sampling_batch(
             os.makedirs(target_dir, exist_ok=True)
 
             for char, img in zip(valid_chars, all_images):
-                target_filename = get_target_filename(char, style_name, font_name)
+                target_filename = get_target_filename(char, style_name)
                 img_path: str = os.path.join(target_dir, target_filename)
                 img.save(img_path)
 

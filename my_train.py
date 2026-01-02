@@ -1075,7 +1075,7 @@ def main():
                 )
                 norm_pred_ori = normalize_mean_std(pred_original)
 
-                percep_loss = perceptual_loss(
+                percep_loss = perceptual_loss.calculate_loss(
                     reNormalize_img(content_images), norm_pred_ori
                 )
 

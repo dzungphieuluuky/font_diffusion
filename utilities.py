@@ -82,6 +82,65 @@ TQDM_FILE_IO = {
     "unit_divisor": 1024,  # Binary divisor for file sizes
 }
 
+import json
+import os
+
+def rename_images(json_file):
+    # Load the JSON data
+    with open(json_file, 'r', encoding='utf-8') as f:
+        data = json.load(f)
+
+    generations = data.get("generations", [])
+
+    for entry in generations:
+        char = entry.get("character")
+        style = entry.get("style")
+        
+        # New base name based on your example: style+char.png
+        new_filename = f"{style}+{char}.png"
+
+        # List of paths to process for each entry
+        paths_to_update = ["content_image_path", "target_image_path"]
+
+        for path_key in paths_to_update:
+            old_path = entry.get(path_key)
+            
+            if old_path and os.path.exists(old_path):
+                # Extract directory (e.g., ContentImage/ or TargetImage/1/)
+                directory = os.path.dirname(old_path)
+
+                if "content" in path_key:
+                    new_filename = f"{char}.png"
+                new_path = os.path.join(directory, new_filename)
+
+                # Rename the actual file on disk
+                try:
+                    os.rename(old_path, new_path)
+                    print(f"Renamed: {old_path} -> {new_path}")
+                    # Update the path in the JSON object
+                    entry[path_key] = new_path
+                except OSError as e:
+                    print(f"Error renaming {old_path}: {e}")
+            else:
+                print(f"Skipping: File not found {old_path}")
+
+    # Save the updated JSON back to a file
+    output_file = "updated_generations.json"
+    with open(output_file, 'w', encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    
+    print(f"\nProcessing complete. Updated JSON saved as: {output_file}")
+
+def rename_content_images(path: str):
+    # Rename all files in ContentImage/ from 1+char.png to char.png
+    content_dir = os.path.join(path, "ContentImage")
+    for filename in os.listdir(content_dir):
+        if '+' in filename:
+            char = filename.split('+')[1]
+            old_path = os.path.join(content_dir, filename)
+            new_path = os.path.join(content_dir, char)
+            os.rename(old_path, new_path)
+            print(f"Renamed: {old_path} -> {new_path}")
 
 def flatten_folder(root_dir):
     """
@@ -214,6 +273,17 @@ if __name__ == "__main__":
         help="Output directory for converted safetensors (if not specified, uses input dir)",
     )
 
+    parser.add_argument(
+        "--rename_images_json",
+        type=str,
+        help="Path to JSON file for renaming images based on character and style",
+    )
+
+    parser.add_argument(
+        "--rename_content_images_dir",
+        type=str,
+        help="Path to directory to rename content images from '1+char.png' to 'char.png'",
+    )
     args = parser.parse_args()
 
     if args.flatten_dir:
@@ -225,3 +295,12 @@ if __name__ == "__main__":
 
     if args.convert_ckpt_dir:
         convert_checkpoint_folder(args.convert_ckpt_dir, args.output_dir)
+    
+    if args.rename_images_json:
+        rename_images(args.rename_images_json)
+
+    if args.rename_content_images_dir:
+        rename_content_images(args.rename_content_images_dir)
+
+    else:
+        print("No arguments provided. Use --help for usage information.")

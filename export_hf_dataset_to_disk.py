@@ -15,34 +15,11 @@ from huggingface_hub.utils import tqdm
 import json
 import os
 
-
-def compute_file_hash(char: str, style: str, font: str = "") -> str:
-    """Compute deterministic hash for a (character, style, font) combination"""
-    content = f"{char}_{style}_{font}"
-    return hashlib.sha256(content.encode("utf-8")).hexdigest()[:8]
-
-
-def get_content_filename(char: str, font: str = "") -> str:
-    """Get content image filename for character"""
-    codepoint = f"U+{ord(char):04X}"
-    hash_val = compute_file_hash(char, "", font)
-    safe_char = char if char.isprintable() and char not in '<>:"/\\|?*' else ""
-    if safe_char:
-        return f"{codepoint}_{safe_char}_{hash_val}.png"
-    else:
-        return f"{codepoint}_{hash_val}.png"
-
-
-def get_target_filename(char: str, style: str, font: str = "") -> str:
-    """Get target image filename"""
-    codepoint = f"U+{ord(char):04X}"
-    hash_val = compute_file_hash(char, style, font)
-    safe_char = char if char.isprintable() and char not in '<>:"/\\|?*' else ""
-    if safe_char:
-        return f"{codepoint}_{safe_char}_{style}_{hash_val}.png"
-    else:
-        return f"{codepoint}_{style}_{hash_val}.png"
-
+from filename_utils import (
+    get_content_filename,
+    get_target_filename,
+    compute_file_hash
+    )
 
 @dataclass
 class ExportConfig:
@@ -141,7 +118,7 @@ class DatasetExporter:
             font = sample.get("font", "unknown")
 
             # Export content image (once per character)
-            content_filename = get_content_filename(char, font)
+            content_filename = get_content_filename(char)
 
             if content_filename not in exported_content:
                 if "content_image" in sample:
@@ -156,7 +133,7 @@ class DatasetExporter:
                 style_dir = target_base_dir / style
                 style_dir.mkdir(parents=True, exist_ok=True)
 
-                target_filename = get_target_filename(char, style, font)
+                target_filename = get_target_filename(char, style)
                 target_img = sample["target_image"]
 
                 if isinstance(target_img, PILImage.Image):
@@ -169,8 +146,8 @@ class DatasetExporter:
                     "character": char,
                     "style": style,
                     "font": font,
-                    "content_image_path": f"ContentImage/{get_content_filename(char, font)}",
-                    "target_image_path": f"TargetImage/{style}/{get_target_filename(char, style, font)}",
+                    "content_image_path": f"ContentImage/{get_content_filename(char)}",
+                    "target_image_path": f"TargetImage/{style}/{get_target_filename(char, style)}",
                     "content_hash": compute_file_hash(char, "", font),
                     "target_hash": compute_file_hash(char, style, font),
                 }

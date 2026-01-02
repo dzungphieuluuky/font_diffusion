@@ -19,6 +19,12 @@ import random
 from huggingface_hub.utils import tqdm
 import hashlib
 
+from filename_utils import (
+    parse_content_filename,
+    parse_target_filename,
+    get_content_filename,
+    get_target_filename,
+)
 
 # Setup logging with tqdm compatibility
 class TqdmLoggingHandler(logging.Handler):
@@ -57,76 +63,6 @@ def compute_file_hash(char: str, style: str, font: str = "") -> str:
     """
     content = f"{char}_{style}_{font}"
     return hashlib.sha256(content.encode("utf-8")).hexdigest()[:8]
-
-
-def parse_content_filename(filename: str) -> Optional[str]:
-    """
-    Parse content filename to extract character only
-    Format: U+XXXX_{char}_{hash}.png or U+XXXX_{hash}.png
-
-    Returns: character or None if parse fails
-    """
-    if not filename.endswith(".png"):
-        return None
-
-    stem = filename[:-4]  # Remove .png
-    parts = stem.split("_")
-
-    if len(parts) < 2:
-        return None
-
-    codepoint = parts[0]
-
-    if not codepoint.startswith("U+"):
-        return None
-
-    try:
-        char_code = int(codepoint.replace("U+", ""), 16)
-        char = chr(char_code)
-        return char
-    except (ValueError, OverflowError):
-        return None
-
-
-def parse_target_filename(filename: str) -> Optional[Tuple[str, str]]:
-    """
-    Parse target filename to extract character and style
-    Format: U+XXXX_{char}_{style}_{hash}.png
-
-    Returns: (char, style) or None if parse fails
-    """
-    if not filename.endswith(".png"):
-        return None
-
-    stem = filename[:-4]  # Remove .png
-    parts = stem.split("_")
-
-    if len(parts) < 3:
-        return None
-
-    codepoint = parts[0]
-
-    if not codepoint.startswith("U+"):
-        return None
-
-    try:
-        char_code = int(codepoint.replace("U+", ""), 16)
-        char = chr(char_code)
-
-        # parts[0] = codepoint
-        # parts[1] = character
-        # parts[2:-1] = style parts
-        # parts[-1] = hash
-
-        style_parts = parts[2:-1]
-        if not style_parts:
-            return None
-
-        style = "_".join(style_parts)
-        return (char, style)
-    except (ValueError, OverflowError, IndexError):
-        return None
-
 
 @dataclass
 class ValidationSplitConfig:

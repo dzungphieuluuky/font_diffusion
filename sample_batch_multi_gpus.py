@@ -89,33 +89,19 @@ from sample_optimized import (
     get_content_transform,
     get_style_transform,
 )
-from utils import load_ttf, ttf2im, is_char_in_font
+from utils import (
+    load_ttf, 
+    ttf2im, 
+    is_char_in_font
+)
 
-
-def compute_file_hash(char: str, style: str, font: str = "") -> str:
-    content = f"{char}_{style}_{font}"
-    return hashlib.sha256(content.encode("utf-8")).hexdigest()[:8]
-
-
-def get_content_filename(char: str, font: str = "") -> str:
-    codepoint = f"U+{ord(char):04X}"
-    hash_val = compute_file_hash(char, "", font)
-    safe_char = char if char.isprintable() and char not in '<>:"/\\|?*' else ""
-    if safe_char:
-        return f"{codepoint}_{safe_char}_{hash_val}.png"
-    else:
-        return f"{codepoint}_{hash_val}.png"
-
-
-def get_target_filename(char: str, style: str, font: str = "") -> str:
-    codepoint = f"U+{ord(char):04X}"
-    hash_val = compute_file_hash(char, style, font)
-    safe_char = char if char.isprintable() and char not in '<>:"/\\|?*' else ""
-    if safe_char:
-        return f"{codepoint}_{safe_char}_{style}_{hash_val}.png"
-    else:
-        return f"{codepoint}_{style}_{hash_val}.png"
-
+from filename_utils import (
+    get_content_filename,
+    get_target_filename,
+    parse_content_filename,
+    parse_target_filename,
+    compute_file_hash,
+)
 
 class FontManager:
     def __init__(self, ttf_path: str) -> None:
