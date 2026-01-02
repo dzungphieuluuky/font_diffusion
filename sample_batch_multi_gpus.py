@@ -89,7 +89,11 @@ from sample_optimized import (
     get_content_transform,
     get_style_transform,
 )
-from utils import load_ttf, ttf2im, is_char_in_font
+from utils import (
+    load_ttf, 
+    ttf2im, 
+    is_char_in_font
+)
 
 from filename_utils import (
     get_content_filename,
@@ -98,7 +102,6 @@ from filename_utils import (
     parse_target_filename,
     compute_file_hash,
 )
-
 
 class FontManager:
     def __init__(self, ttf_path: str) -> None:
@@ -765,7 +768,7 @@ def generate_content_images(
             try:
                 font = font_manager.get_font(found_font)
                 content_img: Image.Image = ttf2im(font=font, char=char)
-                content_filename = get_content_filename(char, found_font)
+                content_filename = get_content_filename(char)
                 char_path: str = os.path.join(content_dir, content_filename)
                 content_img.save(char_path)
                 char_paths[char] = char_path
@@ -952,7 +955,7 @@ def batch_generate_images(
                         )
                         img_path = os.path.join(style_dir, target_filename)
 
-                        content_filename = get_content_filename(char, primary_font)
+                        content_filename = get_content_filename(char)
                         content_path_rel = f"ContentImage/{content_filename}"
                         target_path_rel = f"TargetImage/{style_name}/{target_filename}"
 
@@ -1250,7 +1253,7 @@ def evaluate_results(
             continue
 
         # Find ground truth image
-        gt_filename = get_target_filename(char, style, font)
+        gt_filename = get_target_filename(char, style)
         gt_path = os.path.join(ground_truth_dir, "TargetImage", style, gt_filename)
 
         if not os.path.exists(gt_path):
