@@ -21,6 +21,7 @@ from accelerate import Accelerator
 from accelerate.utils import gather_object
 from PIL import Image
 from tqdm.auto import tqdm
+from argparse import ArgumentParser, Namespace
 
 from filename_utils import compute_file_hash, get_content_filename, get_target_filename
 from sample_optimized import (
@@ -295,10 +296,10 @@ class QualityEvaluator:
         image.save(path)
 
 
-def parse_args() -> argparse.Namespace:
-    """Parse command line arguments."""
-    parser = argparse.ArgumentParser(
-        description="Multi-GPU batch sampling for FontDiffuser"
+def parse_args() -> Namespace:
+    """Parse command line arguments"""
+    parser: ArgumentParser = argparse.ArgumentParser(
+        description="Batch sampling and evaluation"
     )
 
     # Input/Output
@@ -306,60 +307,70 @@ def parse_args() -> argparse.Namespace:
         "--characters",
         type=str,
         required=True,
-        help="Comma-separated characters or path to text file",
+        help="Comma-separated list of characters or path to text file",
     )
     parser.add_argument(
-        "--start_line", type=int, default=1, help="Start line number (1-indexed)"
+        "--start_line",
+        type=int,
+        default=1,
+        help="Start line number for character file (1-indexed)",
     )
     parser.add_argument(
-        "--end_line", type=int, default=None, help="End line number (inclusive)"
+        "--end_line",
+        type=int,
+        default=None,
+        help="End line number for character file (inclusive, None = end of file)",
     )
     parser.add_argument(
         "--style_images",
         type=str,
         required=True,
-        help="Comma-separated paths or directory",
+        help="Comma-separated paths to style images or directory",
     )
     parser.add_argument(
-        "--output_dir", type=str, required=True, help="Output directory"
+        "--output_dir",
+        type=str,
+        default="data_examples/train_original",
+        help="Output directory (will create ContentImage/ and TargetImage/ subdirs)",
     )
     parser.add_argument(
         "--ground_truth_dir",
         type=str,
         default=None,
-        help="Ground truth directory for evaluation",
+        help="Directory with ground truth images for evaluation",
     )
 
-    # Model
+    # Model configuration
     parser.add_argument(
         "--ckpt_dir", type=str, required=True, help="Checkpoint directory"
     )
     parser.add_argument(
-        "--ttf_path", type=str, required=True, help="Path to font file or directory"
+        "--ttf_path",
+        type=str,
+        required=True,
+        help="Path to TTF font file or directory with multiple fonts",
     )
     parser.add_argument("--device", type=str, default="cuda", help="Device to use")
 
-    # Generation
+    # Generation parameters
     parser.add_argument(
         "--num_inference_steps", type=int, default=15, help="Number of inference steps"
     )
     parser.add_argument(
         "--guidance_scale", type=float, default=7.5, help="Guidance scale"
     )
-    parser.add_argument("--batch_size", type=int, default=4, help="Batch size per GPU")
+    parser.add_argument(
+        "--batch_size", type=int, default=4, help="Batch size for generation"
+    )
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
 
-    # Image sizes
+    # Optimization flags
     parser.add_argument(
-        "--style_image_size", type=int, default=96, help="Style image size"
+        "--fp16", action="store_true", default=False, help="Use FP16 precision"
     )
     parser.add_argument(
-        "--content_image_size", type=int, default=96, help="Content image size"
+        "--compile", action="store_true", default=False, help="Use torch.compile"
     )
-
-    # Optimization
-    parser.add_argument("--fp16", action="store_true", help="Use FP16 precision")
-    parser.add_argument("--compile", action="store_true", help="Use torch.compile")
     parser.add_argument(
         "--channels_last",
         action="store_true",
@@ -369,24 +380,47 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--enable_xformers", action="store_true", default=False, help="Enable xformers"
     )
-
-    # Checkpointing
     parser.add_argument(
-        "--save_interval", type=int, default=10, help="Save every N styles"
+        "--fast_sampling",
+        action="store_true",
+        default=False,
+        help="Use fast sampling mode",
     )
 
-    # Evaluation
+    # Checkpoint and resume
+    parser.add_argument(
+        "--save_interval",
+        type=int,
+        default=10,
+        help="Save results every N styles (0 = only save at end)",
+    )
+
+    # Evaluation flags
     parser.add_argument(
         "--evaluate",
         action="store_true",
         default=True,
         help="Evaluate generated images",
     )
-    parser.add_argument("--compute_fid", action="store_true", help="Compute FID")
-
-    # Wandb
     parser.add_argument(
-        "--use_wandb", action="store_true", help="Log to Weights & Biases"
+        "--compute_fid",
+        action="store_true",
+        default=False,
+        help="Compute FID (requires ground truth)",
+    )
+    parser.add_argument(
+        "--enable_attention_slicing",
+        action="store_true",
+        default=False,
+        help="Enable attention slicing for memory efficiency",
+    )
+
+    # Wandb configuration
+    parser.add_argument(
+        "--use_wandb",
+        action="store_true",
+        default=True,
+        help="Log results to Weights & Biases",
     )
     parser.add_argument(
         "--wandb_project",
@@ -399,17 +433,11 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument(
-        "--dataset_split", type=str, default="train", help="Dataset split name"
+        "--dataset_split",
+        type=str,
+        default="train_original",
+        help="Dataset split name (e.g., train_original, val)",
     )
-
-    # DPM-Solver parameters
-    parser.add_argument("--order", type=int, default=2)
-    parser.add_argument("--algorithm_type", type=str, default="dpmsolver++")
-    parser.add_argument("--skip_type", type=str, default="time_uniform")
-    parser.add_argument("--method", type=str, default="multistep")
-    parser.add_argument("--t_start", type=float, default=1.0)
-    parser.add_argument("--t_end", type=float, default=1e-3)
-    parser.add_argument("--content_encoder_downsample_size", type=int, default=3)
 
     return parser.parse_args()
 
@@ -480,27 +508,33 @@ def load_style_images(style_images_arg: str) -> List[Tuple[str, str]]:
         return [(p, os.path.splitext(os.path.basename(p))[0]) for p in style_paths]
 
 
-def create_args_namespace(args: argparse.Namespace) -> argparse.Namespace:
-    """Create args namespace for FontDiffuser pipeline."""
+def create_args_namespace(args: Namespace) -> Namespace:
+    """Create args namespace for FontDiffuser pipeline"""
+
     try:
         from configs.fontdiffuser import get_parser
 
-        parser = get_parser()
-        default_args = parser.parse_args([])
+        parser: ArgumentParser = get_parser()
+        default_args: Namespace = parser.parse_args([])
     except Exception:
-        default_args = argparse.Namespace()
+        default_args: Namespace = Namespace()
 
-    # Copy all attributes
+    # Override with user arguments
     for key, value in vars(args).items():
         setattr(default_args, key, value)
 
-    # Convert image sizes to tuples
-    if isinstance(default_args.style_image_size, int):
+    # Ensure image sizes are tuples
+    if not hasattr(default_args, "style_image_size"):
+        default_args.style_image_size = (96, 96)
+    elif isinstance(default_args.style_image_size, int):
         default_args.style_image_size = (
             default_args.style_image_size,
             default_args.style_image_size,
         )
-    if isinstance(default_args.content_image_size, int):
+
+    if not hasattr(default_args, "content_image_size"):
+        default_args.content_image_size = (96, 96)
+    elif isinstance(default_args.content_image_size, int):
         default_args.content_image_size = (
             default_args.content_image_size,
             default_args.content_image_size,
@@ -513,9 +547,22 @@ def create_args_namespace(args: argparse.Namespace) -> argparse.Namespace:
     default_args.cache_models = True
     default_args.controlnet = False
     default_args.resolution = 96
-    default_args.guidance_type = "classifier-free"
-    default_args.model_type = "noise"
-    default_args.correcting_x0_fn = None
+
+    # Generation parameters
+    default_args.algorithm_type = getattr(default_args, "algorithm_type", "dpmsolver++")
+    default_args.guidance_type = getattr(
+        default_args, "guidance_type", "classifier-free"
+    )
+    default_args.method = getattr(default_args, "method", "multistep")
+    default_args.order = getattr(default_args, "order", 2)
+    default_args.model_type = getattr(default_args, "model_type", "noise")
+    default_args.t_start = getattr(default_args, "t_start", 1.0)
+    default_args.t_end = getattr(default_args, "t_end", 1e-3)
+    default_args.skip_type = getattr(default_args, "skip_type", "time_uniform")
+    default_args.correcting_x0_fn = getattr(default_args, "correcting_x0_fn", None)
+    default_args.content_encoder_downsample_size = getattr(
+        default_args, "content_encoder_downsample_size", 3
+    )
 
     return default_args
 
@@ -680,20 +727,23 @@ def sampling_batch(
                 batch_content = content_batch[i : i + args.batch_size]
                 batch_style = style_batch[i : i + args.batch_size]
 
+                # FIX: Use getattr with defaults for optional attributes
                 images = pipe.generate(
                     content_images=batch_content,
                     style_images=batch_style,
                     batch_size=len(batch_content),
-                    order=args.order,
+                    order=getattr(args, 'order', 2),
                     num_inference_step=args.num_inference_steps,
-                    content_encoder_downsample_size=args.content_encoder_downsample_size,
-                    t_start=args.t_start,
-                    t_end=args.t_end,
+                    content_encoder_downsample_size=getattr(
+                        args, 'content_encoder_downsample_size', 3
+                    ),
+                    t_start=getattr(args, 't_start', 1.0),
+                    t_end=getattr(args, 't_end', 1e-3),
                     dm_size=args.content_image_size,
-                    algorithm_type=args.algorithm_type,
-                    skip_type=args.skip_type,
-                    method=args.method,
-                    correcting_x0_fn=args.correcting_x0_fn,
+                    algorithm_type=getattr(args, 'algorithm_type', 'dpmsolver++'),
+                    skip_type=getattr(args, 'skip_type', 'time_uniform'),
+                    method=getattr(args, 'method', 'multistep'),
+                    correcting_x0_fn=getattr(args, 'correcting_x0_fn', None),
                 )
                 all_images.extend(images)
 
@@ -704,8 +754,9 @@ def sampling_batch(
 
     except Exception as e:
         logger.error(f"Batch sampling failed: {e}")
+        import traceback
+        traceback.print_exc()
         return None, None, None
-
 
 def batch_generate_images(
     pipe: FontDiffuserDPMPipeline,
