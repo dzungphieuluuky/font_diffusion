@@ -162,7 +162,7 @@ class FontDiffusionDatasetBuilder:
             .cast_column("content_image", HFImage())
             .cast_column("target_image", HFImage())
         )
-
+        
     def push_to_hub(self, dataset: Dataset) -> None:
         """Push dataset to Hugging Face Hub"""
         if not self.config.push_to_hub:

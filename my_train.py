@@ -244,7 +244,7 @@ def main():
                 # Sample a random timestep for each image
                 timesteps = torch.randint(
                     0,
-                    noise_scheduler.num_train_timesteps,
+                    noise_scheduler.config.num_train_timesteps,
                     (bsz,),
                     device=target_images.device,
                 )
@@ -352,15 +352,15 @@ def main():
                         # Save individual components
                         # Prioritize save .safetensors format 
                         save_model_checkpoint(
-                            unwrapped_model.unet.state_dict(),
+                            unwrapped_model.config.unet.state_dict(),
                             f"{save_dir}/unet.safetensors"
                         )
                         save_model_checkpoint(
-                            unwrapped_model.style_encoder.state_dict(),
+                            unwrapped_model.config.style_encoder.state_dict(),
                             f"{save_dir}/style_encoder.safetensors",
                         )
                         save_model_checkpoint(
-                            unwrapped_model.content_encoder.state_dict(),
+                            unwrapped_model.config.content_encoder.state_dict(),
                             f"{save_dir}/content_encoder.safetensors",
                         )
                         
