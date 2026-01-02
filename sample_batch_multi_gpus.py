@@ -1145,9 +1145,18 @@ def main():
     except Exception as e:
         logger.error(f"Fatal error: {e}")
         import traceback
-
         traceback.print_exc()
         sys.exit(1)
+    
+    finally:
+        # FIX: Properly cleanup multi-GPU resources
+        try:
+            accelerator.free_memory()
+            if torch.distributed.is_available() and torch.distributed.is_initialized():
+                torch.distributed.destroy_process_group()
+                logger.info("Process group destroyed successfully")
+        except Exception as e:
+            logger.warning(f"Error during cleanup: {e}")
 
 
 if __name__ == "__main__":
