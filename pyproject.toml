@@ -1,32 +1,7 @@
 [project]
 name = "fontdiffusion"
 version = "0.1.0"
-description = "Style-driven font generation via diffusion models"
+description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = [
-    "accelerate>=0.20.0",
-    "datasets>=4.4.2",
-    "diffusers==0.22.0",
-    "gradio==4.8.0",
-    "huggingface-hub[cli]>=0.36.0",
-    "info-nce-pytorch>=0.1.4",
-    "kornia>=0.8.2",
-    "lpips>=0.1.4",
-    "matplotlib>=3.7.0",
-    "numpy>=1.23.0",
-    "opencv-python>=4.11.0.86",
-    "pillow>=9.0.0",
-    "pyarrow>=22.0.0",
-    "pygame>=2.6.1",
-    "pytorch-fid>=0.3.0",
-    "pyyaml>=6.0.3",
-    "scikit-image>=0.20.0",
-    "scipy>=1.10.0",
-    "torch>=2.0.0",
-    "torchvision>=0.15.0",
-    "tqdm>=4.65.0",
-    "transformers==4.33.1",
-    "wandb>=0.15.0",
-    "xformers>=0.0.20",
-]
+dependencies = []
