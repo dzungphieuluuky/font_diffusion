@@ -20,10 +20,10 @@ def parse_arguments() -> argparse.Namespace:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python pth2safetensors.py --weights_dir "ckpt" --repo_id "username/font-diffusion-weights" --token "hf_xxx"
-  python pth2safetensors.py --weights_dir "ckpt" --repo_id "username/font-diffusion-weights" --files "unet.pth" "style_encoder.pth"
-  python pth2safetensors.py --weights_dir "ckpt" --no-upload
-  python pth2safetensors.py --weights_dir "ckpt" --repo_id "username/font-diffusion-weights" --skip-conversion
+  python upload_models.py --weights_dir "ckpt" --repo_id "username/font-diffusion-weights" --token "hf_xxx"
+  python upload_models.py --weights_dir "ckpt" --repo_id "username/font-diffusion-weights" --files "unet.pth" "style_encoder.pth"
+  python upload_models.py --weights_dir "ckpt" --no-upload
+  python upload_models.py --weights_dir "ckpt" --repo_id "username/font-diffusion-weights" --skip-conversion
         """,
     )
     parser.add_argument("--weights_dir", type=str, required=True, default="outputs/FontDiffuser", help="Directory with .pth/.safetensors files")
@@ -36,6 +36,7 @@ Examples:
         "total_model.pth", "total_model.safetensors",
         "scr.pth", "scr.safetensors",
     ], help="Specific files to convert (default: all standard FontDiffusion weights)")
+    parser.add_argument("--repo_type", type=str, default="model", help="Repository type (default: model)")
     parser.add_argument("--private", action="store_true", default=False, help="Make repository private")
     parser.add_argument("--no-upload", action="store_true", default=False, help="Convert only, do not upload")
     parser.add_argument("--skip-conversion", action="store_true", default=False, help="Skip conversion, only upload")
@@ -147,7 +148,7 @@ def upload_to_hub(args: argparse.Namespace) -> bool:
         print(f"\n📤 Creating/verifying repository...")
         create_repo(
             repo_id=args.repo_id,
-            repo_type="model",
+            repo_type=args.repo_type,
             exist_ok=True,
             private=args.private,
             token=token,
@@ -157,7 +158,7 @@ def upload_to_hub(args: argparse.Namespace) -> bool:
         api.upload_folder(
             folder_path=args.weights_dir,
             repo_id=args.repo_id,
-            repo_type="model",
+            repo_type=args.repo_type,
             token=token,
             commit_message=args.commit_message,
         )
