@@ -31,7 +31,7 @@ class FontDiffuserModel(ModelMixin, ConfigMixin):
         content_images,
         content_encoder_downsample_size,
     ):
-        style_img_feature, _, _ = self.style_encoder(style_images)
+        style_img_feature, _, _ = self.config.style_encoder(style_images)
 
         batch_size, channel, height, width = style_img_feature.shape
         style_hidden_states = style_img_feature.permute(0, 2, 3, 1).reshape(
@@ -39,12 +39,12 @@ class FontDiffuserModel(ModelMixin, ConfigMixin):
         )
 
         # Get the content feature
-        content_img_feature, content_residual_features = self.content_encoder(
+        content_img_feature, content_residual_features = self.config.content_encoder(
             content_images
         )
         content_residual_features.append(content_img_feature)
         # Get the content feature from reference image
-        style_content_feature, style_content_res_features = self.content_encoder(
+        style_content_feature, style_content_res_features = self.config.content_encoder(
             style_images
         )
         style_content_res_features.append(style_content_feature)
@@ -56,7 +56,7 @@ class FontDiffuserModel(ModelMixin, ConfigMixin):
             style_content_res_features,
         ]
 
-        out = self.unet(
+        out = self.config.unet(
             x_t,
             timesteps,
             encoder_hidden_states=input_hidden_states,
@@ -96,7 +96,7 @@ class FontDiffuserModelDPM(ModelMixin, ConfigMixin):
         content_images = cond[0]
         style_images = cond[1]
 
-        style_img_feature, _, style_residual_features = self.style_encoder(style_images)
+        style_img_feature, _, style_residual_features = self.config.style_encoder(style_images)
 
         batch_size, channel, height, width = style_img_feature.shape
         style_hidden_states = style_img_feature.permute(0, 2, 3, 1).reshape(
@@ -104,12 +104,12 @@ class FontDiffuserModelDPM(ModelMixin, ConfigMixin):
         )
 
         # Get content feature
-        content_img_feture, content_residual_features = self.content_encoder(
+        content_img_feture, content_residual_features = self.config.content_encoder(
             content_images
         )
         content_residual_features.append(content_img_feture)
         # Get the content feature from reference image
-        style_content_feature, style_content_res_features = self.content_encoder(
+        style_content_feature, style_content_res_features = self.config.content_encoder(
             style_images
         )
         style_content_res_features.append(style_content_feature)
@@ -121,7 +121,7 @@ class FontDiffuserModelDPM(ModelMixin, ConfigMixin):
             style_content_res_features,
         ]
 
-        out = self.unet(
+        out = self.config.unet(
             x_t,
             timesteps,
             encoder_hidden_states=input_hidden_states,
