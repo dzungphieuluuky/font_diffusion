@@ -2,7 +2,8 @@ import os
 import math
 import time
 import logging
-from tqdm.auto import tqdm
+from huggingface_hub.utils import tqdm
+from pathlib import Path
 
 import torch
 import torch.nn.functional as F
@@ -108,8 +109,10 @@ def main():
     if accelerator.is_main_process:
         os.makedirs(args.output_dir, exist_ok=True)
 
+    log_filename = Path(f"{args.output_dir}/fontdiffuser_training.log")
+    log_filename.parent.mkdir(parents=True, exist_ok=True)
     logging.basicConfig(
-        filename=f"{args.output_dir}/fontdiffuser_training.log",
+        filename=str(log_filename),
         datefmt="%m/%d/%Y %H:%M:%S",
         level=logging.INFO,
     )
