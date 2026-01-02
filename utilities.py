@@ -44,7 +44,7 @@ class HFTqdm(tqdm):
         kwargs.setdefault("bar_format", HF_BAR_FORMAT)
         kwargs.setdefault("colour", HF_BLUE) # Start as Blue
         kwargs.setdefault("ascii", False)
-        kwargs.setdefault("ncols", 64)      # Fixed width
+        kwargs.setdefault("ncols", 100)      # Fixed width
         super().__init__(*args, **kwargs)
 
     def close(self):
