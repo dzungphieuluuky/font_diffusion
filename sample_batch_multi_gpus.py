@@ -587,8 +587,6 @@ def main():
             logger.info(f"    │   └── ...")
             logger.info(f"    └── results_checkpoint.json ✅ (single source of truth)")
 
-        accelerator.wait_for_everyone()
-
     except KeyboardInterrupt:
         logger.info("\n\n⚠ Generation interrupted by user!")
         logger.info("💾 Saving emergency checkpoint...")
