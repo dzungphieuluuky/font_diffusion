@@ -146,7 +146,7 @@ def generate_content_images_with_accelerator(
                     logging.info(
                         f"  ✓ Content image already exists for '{char}' at {char_path}"
                     )
-                    char_paths[char] = char_path
+                    local_char_paths[char] = char_path
                     chars_already_exist.append(char)
                     continue
 
@@ -158,7 +158,7 @@ def generate_content_images_with_accelerator(
                 logging.info(
                     f"  ✓ Generated new content image for '{char}' at {char_path}."
                 )
-                char_paths[char] = char_path
+                local_char_paths[char] = char_path
                 generated_new += 1
 
             except Exception as e:
