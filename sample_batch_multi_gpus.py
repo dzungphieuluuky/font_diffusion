@@ -572,6 +572,9 @@ def main():
             if args.use_wandb:
                 log_to_wandb(results, args)
 
+        # accelerator.wait_for_everyone()  # ← Add this
+        
+        if accelerator.is_main_process:
             logger.info("=" * 60)
             logger.info("✅ GENERATION COMPLETE!")
             logger.info("=" * 60)
@@ -587,6 +590,7 @@ def main():
             logger.info(f"    │   └── ...")
             logger.info(f"    └── results_checkpoint.json ✅ (single source of truth)")
 
+        # accelerator.wait_for_everyone()
     except KeyboardInterrupt:
         logger.info("\n\n⚠ Generation interrupted by user!")
         logger.info("💾 Saving emergency checkpoint...")
