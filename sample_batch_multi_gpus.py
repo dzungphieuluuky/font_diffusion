@@ -613,6 +613,7 @@ def main():
 
     finally:
         try:
+            import torch.distributed
             accelerator.free_memory()
             torch.distributed.destroy_process_group()
             logger.info("Process group destroyed successfully")
