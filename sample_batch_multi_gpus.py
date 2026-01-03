@@ -93,20 +93,9 @@ def generate_content_images_with_accelerator(
     output_dir: str,
     accelerator: Accelerator,
 ) -> Dict[str, str]:
-    """Generate content images distributed across GPUs.
-
-    Args:
-        characters: List of characters to generate
-        font_manager: Font manager instance
-        output_dir: Output directory
-        accelerator: Accelerator instance
-
-    Returns:
-        Dictionary mapping character to image path
-    """
+    """Generate content images distributed across GPUs."""
     content_dir = os.path.join(output_dir, "ContentImage")
 
-    # Main process creates directory
     if accelerator.is_main_process:
         os.makedirs(content_dir, exist_ok=True)
     accelerator.wait_for_everyone()
@@ -120,6 +109,9 @@ def generate_content_images_with_accelerator(
 
     # Split characters across GPUs
     local_char_paths = {}
+    chars_already_exist = []  # ← Initialize
+    generated_new = 0  # ← Initialize
+    
     with accelerator.split_between_processes(characters) as local_chars:
         for char in get_hf_bar(
             local_chars,
@@ -137,35 +129,32 @@ def generate_content_images_with_accelerator(
                 continue
 
             try:
-                # ✅ Generate expected filename
                 content_filename = get_content_filename(char)
                 char_path: str = os.path.join(content_dir, content_filename)
 
-                # ✅ Check if content image already exists
                 if os.path.exists(char_path):
-                    logging.info(
+                    logger.info(  # ← Use logger instead of logging
                         f"  ✓ Content image already exists for '{char}' at {char_path}"
                     )
                     local_char_paths[char] = char_path
                     chars_already_exist.append(char)
                     continue
 
-                # Generate new content image only if it doesn't exist
                 font = font_manager.get_font(found_font)
                 content_img: Image.Image = ttf2im(font=font, char=char)
-
                 content_img.save(char_path)
-                logging.info(
+                
+                logger.info(  # ← Use logger instead of logging
                     f"  ✓ Generated new content image for '{char}' at {char_path}."
                 )
                 local_char_paths[char] = char_path
                 generated_new += 1
 
             except Exception as e:
-                logging.info(f"  ✗ Error generating '{char}': {e}")
+                logger.warning(f"  ✗ Error generating '{char}': {e}")
 
     # Gather results from all GPUs
-    accelerator.wait_for_everyone()
+    accelerator.wait_for_everyone()  # ← Add before gather
     all_char_paths_list = gather_object([local_char_paths])
 
     # Merge results on main process
@@ -176,8 +165,8 @@ def generate_content_images_with_accelerator(
         logger.info(f"Generated {len(merged_char_paths)} content images")
         return merged_char_paths
     else:
+        accelerator.wait_for_everyone()  # ← Wait before returning
         return {}
-
 
 def batch_generate_images_with_accelerator(
     pipe: FontDiffuserDPMPipeline,
@@ -209,18 +198,19 @@ def batch_generate_images_with_accelerator(
     )
     all_chars_in_checkpoint.update(char_paths.keys())
 
-    results = {
-        "generations": (
-            generation_tracker.generations.copy() if accelerator.is_main_process else []
-        ),
-        "metrics": {"lpips": [], "ssim": [], "inference_times": []},
-        "dataset_split": args.dataset_split,
-        "fonts": font_manager.get_font_names(),
-        "characters": sorted(list(all_chars_in_checkpoint)),
-        "styles": sorted(list(all_styles_in_checkpoint)),
-        "total_chars": len(all_chars_in_checkpoint),
-        "total_styles": len(all_styles_in_checkpoint),
-    }
+    if accelerator.is_main_process:
+        results = {
+            "generations": generation_tracker.generations.copy(),
+            "metrics": {"lpips": [], "ssim": [], "inference_times": []},
+            "dataset_split": args.dataset_split,
+            "fonts": font_manager.get_font_names(),
+            "characters": sorted(list(all_chars_in_checkpoint)),
+            "styles": sorted(list(all_styles_in_checkpoint)),
+            "total_chars": len(all_chars_in_checkpoint),
+            "total_styles": len(all_styles_in_checkpoint),
+        }
+    else:
+        results = {}
 
     # Setup directories
     target_base_dir = os.path.join(output_dir, "TargetImage")
@@ -298,24 +288,24 @@ def batch_generate_images_with_accelerator(
                         evaluator.save_image(img, img_path)
 
                         # Add generation record
-                        generation_record = {
-                            "character": char,
-                            "char_code": f"U+{ord(char):04X}",
-                            "style": style_name,
-                            "font": primary_font,
-                            "content_image_path": content_path_rel,
-                            "target_image_path": target_path_rel,
-                            "content_hash": compute_file_hash(char, "", primary_font),
-                            "target_hash": compute_file_hash(
-                                char, style_name, primary_font
-                            ),
-                            "content_filename": content_filename,
-                            "target_filename": target_filename,
-                        }
-
-                        results["generations"].append(generation_record)
-                        generation_tracker.add_generation(generation_record)
-                        generated_count += 1
+                        if accelerator.is_main_process:
+                            generation_record = {
+                                "character": char,
+                                "char_code": f"U+{ord(char):04X}",
+                                "style": style_name,
+                                "font": primary_font,
+                                "content_image_path": content_path_rel,
+                                "target_image_path": target_path_rel,
+                                "content_hash": compute_file_hash(char, "", primary_font),
+                                "target_hash": compute_file_hash(
+                                    char, style_name, primary_font
+                                ),
+                                "content_filename": content_filename,
+                                "target_filename": target_filename,
+                            }
+                            results["generations"].append(generation_record)
+                            generation_tracker.add_generation(generation_record)
+                            generated_count += 1
 
                     except Exception as e:
                         logger.warning(f"Error saving '{char}': {e}")
@@ -626,13 +616,15 @@ def main():
 
     finally:
         try:
-            import torch.distributed
             accelerator.free_memory()
-            torch.distributed.destroy_process_group()
-            logger.info("Process group destroyed successfully")
+            # Only destroy if distributed
+            if accelerator.num_processes > 1:
+                import torch.distributed
+                if torch.distributed.is_initialized():
+                    torch.distributed.destroy_process_group()
+            logger.info("Cleanup completed successfully")
         except Exception as e:
             logger.warning(f"Error during cleanup: {e}")
-
 
 if __name__ == "__main__":
     main()
