@@ -5,6 +5,7 @@ import torch
 from safetensors.torch import save_file
 import shutil
 from tqdm.auto import tqdm
+import time
 from typing import Any, Dict
 import logging
 import json
@@ -27,46 +28,196 @@ logging.basicConfig(
     handlers=[TqdmLoggingHandler()],
 )
 
-HF_BLUE = "#05339C"  # Color for active bars
-HF_GREEN = "#41A67E"  # Color for completed bars
+# Hugging Face colors
+HF_BLUE = "#1055C9"
+HF_GREEN = "#00C896"
+HF_ORANGE = "#FF8C00"
+HF_RED = "#E03E3E"
 
-# The format string to match your image exactly:
-HF_BAR_FORMAT = "{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]"
+# Enhanced bar format with smooth animation
+HF_BAR_FORMAT = (
+    "{desc}: {percentage:3.0f}%|{bar}| "
+    "{n_fmt}/{total_fmt} "
+    "[{elapsed}<{remaining}, {rate_fmt}]"
+)
 
 
 class HFTqdm(tqdm):
     """
-    A custom TQDM bar that replicates the Hugging Face download look.
+    Enhanced TQDM progress bar that replicates the Hugging Face download interface.
+    Features smooth updates, dynamic colors, and polished formatting.
     """
 
     def __init__(self, *args, **kwargs):
-        # Set defaults to match the image
-        kwargs.setdefault("unit", "iteration")
-        kwargs.setdefault("unit_scale", True)
-        kwargs.setdefault("unit_divisor", 1024)
+        # Set defaults to match HuggingFace style
+        kwargs.setdefault("unit", "it")
+        kwargs.setdefault("unit_scale", False)
         kwargs.setdefault("bar_format", HF_BAR_FORMAT)
-        kwargs.setdefault("colour", HF_BLUE)  # Start as Blue
+        kwargs.setdefault("colour", HF_BLUE)
         kwargs.setdefault("ascii", False)
-        kwargs.setdefault("dynamic_ncols", False)
-        kwargs.setdefault("ncols", 100)  # Fixed width
+        kwargs.setdefault("dynamic_ncols", True)  # Adaptive width
+        kwargs.setdefault("mininterval", 0.1)  # Smooth updates (100ms)
+        kwargs.setdefault("maxinterval", 1.0)
+        kwargs.setdefault("smoothing", 0.3)  # Smooth rate averaging
+        kwargs.setdefault("leave", True)
+        
+        # Store original description for formatting
+        self._base_desc = kwargs.get("desc", "Processing")
+        
         super().__init__(*args, **kwargs)
-
+        
+        # Track state
+        self._start_time = time.time()
+        self._warning_shown = False
+        
+    def update(self, n=1):
+        """Enhanced update with dynamic color changes."""
+        super().update(n)
+        
+        # Dynamic color based on progress
+        if self.total:
+            progress = self.n / self.total
+            if progress < 0.3:
+                self.colour = HF_BLUE
+            elif progress < 0.7:
+                self.colour = HF_BLUE  # Keep blue during main work
+            elif progress < 1.0:
+                self.colour = HF_BLUE
+            else:
+                self.colour = HF_GREEN  # Green on completion
+                
+    def set_description(self, desc=None, refresh=True):
+        """Enhanced description with emoji support."""
+        if desc:
+            self._base_desc = desc
+        super().set_description(desc, refresh=refresh)
+        
+    def set_postfix(self, ordered_dict=None, refresh=True, **kwargs):
+        """Enhanced postfix for additional metrics."""
+        super().set_postfix(ordered_dict=ordered_dict, refresh=refresh, **kwargs)
+        
     def close(self):
-        """Change color to green upon completion."""
-        self.colour = HF_GREEN
+        """Finalize bar with green color and success indicator."""
+        if self.total and self.n >= self.total:
+            self.colour = HF_GREEN
+            
+            # Add completion indicator
+            elapsed = time.time() - self._start_time
+            if elapsed < 60:
+                time_str = f"{elapsed:.1f}s"
+            else:
+                time_str = f"{elapsed/60:.1f}min"
+                
+            # Update description with checkmark
+            final_desc = f"✓ {self._base_desc}"
+            self.set_description(final_desc, refresh=False)
+        else:
+            # Incomplete - orange color
+            self.colour = HF_ORANGE
+            
         self.refresh()
         super().close()
+        
+    def __enter__(self):
+        """Context manager entry."""
+        return self
+        
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Context manager exit with error handling."""
+        if exc_type is not None:
+            # Error occurred - show red
+            self.colour = HF_RED
+            error_desc = f"✗ {self._base_desc} (failed)"
+            self.set_description(error_desc, refresh=False)
+        self.close()
+        return False
 
 
-def get_hf_bar(iterable=None, desc="File", total=None, **kwargs):
-    """Factory function for the progress bar."""
+class HFTqdmFile(HFTqdm):
+    """
+    Specialized progress bar for file operations with byte formatting.
+    """
+    
+    def __init__(self, *args, **kwargs):
+        kwargs.setdefault("unit", "B")
+        kwargs.setdefault("unit_scale", True)
+        kwargs.setdefault("unit_divisor", 1024)
+        super().__init__(*args, **kwargs)
+
+
+class HFTqdmBatch(HFTqdm):
+    """
+    Specialized progress bar for batch processing with sample counting.
+    """
+    
+    def __init__(self, *args, **kwargs):
+        kwargs.setdefault("unit", "sample")
+        kwargs.setdefault("unit_scale", False)
+        super().__init__(*args, **kwargs)
+        
+
+def get_hf_bar(iterable=None, desc="Processing", total=None, unit="it", **kwargs):
+    """
+    Factory function for HuggingFace-style progress bars.
+    
+    Args:
+        iterable: Iterable to wrap (optional)
+        desc: Description text (default: "Processing")
+        total: Total number of iterations (optional)
+        unit: Unit name (default: "it")
+        **kwargs: Additional tqdm parameters
+        
+    Returns:
+        HFTqdm instance
+        
+    Examples:
+        >>> for item in get_hf_bar(items, desc="Loading data"):
+        ...     process(item)
+        
+        >>> with get_hf_bar(total=100, desc="Training") as pbar:
+        ...     for i in range(100):
+        ...         train_step()
+        ...         pbar.update(1)
+    """
+    kwargs["unit"] = unit
     return HFTqdm(iterable=iterable, desc=desc, total=total, **kwargs)
 
+
+def get_hf_bar_file(iterable=None, desc="File processing", total=None, **kwargs):
+    """
+    Create progress bar optimized for file downloads/transfers.
+    
+    Args:
+        iterable: Iterable to wrap
+        desc: Description (default: "File processing")
+        total: Total bytes
+        **kwargs: Additional parameters
+        
+    Returns:
+        HFTqdmFile instance
+    """
+    return HFTqdmFile(iterable=iterable, desc=desc, total=total, **kwargs)
+
+
+def get_hf_bar_batch(iterable=None, desc="Processing batches", total=None, **kwargs):
+    """
+    Create progress bar optimized for batch processing.
+    
+    Args:
+        iterable: Iterable to wrap
+        desc: Description (default: "Processing batches")
+        total: Total batches
+        **kwargs: Additional parameters
+        
+    Returns:
+        HFTqdmBatch instance
+    """
+    return HFTqdmBatch(iterable=iterable, desc=desc, total=total, **kwargs)
 
 def load_model_checkpoint(checkpoint_path: str | Path) -> Dict[str, Any]:
     if isinstance(checkpoint_path, Path):
         checkpoint_path = str(checkpoint_path)
-        
+
     if not os.path.exists(checkpoint_path):
         raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
     if checkpoint_path.endswith(".safetensors"):

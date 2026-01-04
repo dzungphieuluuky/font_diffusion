@@ -41,7 +41,11 @@ from sample_batch import (
 )
 from src.dpm_solver.pipeline_dpm_solver import FontDiffuserDPMPipeline
 from utils import is_char_in_font, load_ttf, ttf2im
-from utilities import get_hf_bar
+from utilities import (
+    get_hf_bar,
+    get_hf_bar_batch,
+    get_hf_bar_file,
+)
 
 # Configure logging for multi-GPU
 logging.basicConfig(
@@ -118,7 +122,7 @@ def generate_content_images_with_accelerator(
     # Split characters across GPUs
     local_char_paths = {}
     with accelerator.split_between_processes(characters) as local_chars:
-        for char in get_hf_bar(
+        for char in get_hf_bar_file(
             local_chars,
             desc=f"GPU {accelerator.process_index}",
             disable=not accelerator.is_local_main_process,
@@ -328,7 +332,7 @@ def batch_generate_images_with_accelerator(
     # Distribute styles across GPUs
     with accelerator.split_between_processes(style_paths_with_names) as local_styles:
         for style_idx, (style_path, style_name) in enumerate(
-            get_hf_bar(
+            get_hf_bar_batch(
                 local_styles,
                 desc=f"GPU {accelerator.process_index}",
                 disable=not accelerator.is_local_main_process,
@@ -480,7 +484,7 @@ def evaluate_results(
 
     target_base_dir = os.path.join(output_dir, "TargetImage")
 
-    for gen in get_hf_bar(
+    for gen in get_hf_bar_batch(
         results["generations"],
         desc="Evaluating",
         disable=not accelerator.is_main_process,
@@ -546,7 +550,7 @@ def main():
     """Main entry point."""
     args = parse_args()
     args = create_args_namespace(args)
-    
+
     logger.info("=" * 60)
     logger.info("FONTDIFFUSER MULTI-GPU SYNTHESIS")
     logger.info("=" * 60)
