@@ -109,8 +109,8 @@ def generate_content_images_with_accelerator(
 
     # Split characters across GPUs
     local_char_paths = {}
-    chars_already_exist = []  # ← Initialize
-    generated_new = 0  # ← Initialize
+    chars_already_exist = []
+    generated_new = 0
     
     with accelerator.split_between_processes(characters) as local_chars:
         for char in get_hf_bar(
@@ -133,7 +133,7 @@ def generate_content_images_with_accelerator(
                 char_path: str = os.path.join(content_dir, content_filename)
 
                 if os.path.exists(char_path):
-                    logger.info(  # ← Use logger instead of logging
+                    logger.info(
                         f"  ✓ Content image already exists for '{char}' at {char_path}"
                     )
                     local_char_paths[char] = char_path
@@ -144,7 +144,7 @@ def generate_content_images_with_accelerator(
                 content_img: Image.Image = ttf2im(font=font, char=char)
                 content_img.save(char_path)
                 
-                logger.info(  # ← Use logger instead of logging
+                logger.info(
                     f"  ✓ Generated new content image for '{char}' at {char_path}."
                 )
                 local_char_paths[char] = char_path
@@ -154,20 +154,28 @@ def generate_content_images_with_accelerator(
                 logger.warning(f"  ✗ Error generating '{char}': {e}")
 
     # Gather results from all GPUs
-    accelerator.wait_for_everyone()  # ← Add before gather
-    all_char_paths_list = gather_object([local_char_paths])
+    accelerator.wait_for_everyone()
+    all_char_paths_list = gather_object(local_char_paths)
 
     # Merge results on main process
     if accelerator.is_main_process:
         merged_char_paths = {}
         for paths in all_char_paths_list:
             merged_char_paths.update(paths)
-        logger.info(f"Generated {len(merged_char_paths)} content images")
+        
+        logger.info(f"{'=' * 60}")
+        logger.info(f"Content Image Generation Summary:")
+        logger.info(f"  Total characters:       {len(characters)}")
+        logger.info(f"  Generated (new):        {generated_new}")
+        logger.info(f"  Already exist (reused): {len(chars_already_exist)}")
+        logger.info(f"  Total usable:           {len(merged_char_paths)}")
+        logger.info("=" * 60)
+        
         return merged_char_paths
     else:
-        accelerator.wait_for_everyone()  # ← Wait before returning
+        accelerator.wait_for_everyone()
         return {}
-
+    
 def batch_generate_images_with_accelerator(
     pipe: FontDiffuserDPMPipeline,
     characters: List[str],
