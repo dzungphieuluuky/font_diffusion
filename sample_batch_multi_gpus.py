@@ -84,7 +84,7 @@ except ImportError:
     WANDB_AVAILABLE = False
     logger.warning("wandb not available. Install with: pip install wandb")
 
-def generate_content_images(
+def generate_content_images_with_accelerator(
     characters: List[str],
     font_manager: FontManager,
     output_dir: str,
@@ -163,7 +163,7 @@ def generate_content_images(
         return {}
 
 
-def sampling_batch(
+def sampling_batch_with_accelerator(
     args: argparse.Namespace,
     pipe: FontDiffuserDPMPipeline,
     characters: List[str],
@@ -258,7 +258,7 @@ def sampling_batch(
         return None, None, None
 
 
-def batch_generate_images(
+def batch_generate_images_with_accelerator(
     pipe: FontDiffuserDPMPipeline,
     characters: List[str],
     style_paths_with_names: List[Tuple[str, str]],
@@ -272,7 +272,7 @@ def batch_generate_images(
     """Main batch generation with multi-GPU support."""
 
     # Generate content images
-    char_paths = generate_content_images(
+    char_paths = generate_content_images_with_accelerator(
         characters, font_manager, output_dir, accelerator
     )
 
@@ -352,7 +352,7 @@ def batch_generate_images(
                     continue
 
                 # Generate batch
-                images, valid_chars, batch_time = sampling_batch(
+                images, valid_chars, batch_time = sampling_batch_with_accelerator(
                     args,
                     pipe,
                     chars_to_generate,
@@ -594,7 +594,7 @@ def main():
                 f"Generating {len(characters)} × {len(style_paths_with_names)} images"
             )
 
-        results = batch_generate_images(
+        results = batch_generate_images_with_accelerator(
             pipe,
             characters,
             style_paths_with_names,
