@@ -125,6 +125,7 @@ def generate_content_images_with_accelerator(
         for char in get_hf_bar(
             local_chars,
             desc=f"GPU {accelerator.process_index} generating content images",
+            unit="char",
             disable=not accelerator.is_local_main_process,
         ):
             # Find font containing character
@@ -334,6 +335,7 @@ def batch_generate_images_with_accelerator(
         for style_idx, (style_path, style_name) in enumerate(
             get_hf_bar(
                 local_styles,
+                unit= "style",
                 desc=f"GPU {accelerator.process_index} generating styles",
                 disable=not accelerator.is_local_main_process,
             )
@@ -487,6 +489,7 @@ def evaluate_results(
     for gen in get_hf_bar(
         results["generations"],
         desc=f"GPU {accelerator.process_index} evaluating generated images",
+        unit="image",
         disable=not accelerator.is_main_process,
     ):
         char = gen["character"]
