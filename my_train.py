@@ -305,8 +305,6 @@ def save_checkpoint(
         unwrapped_model.config.content_encoder.state_dict(),
         save_dir / "content_encoder.safetensors",
     )
-
-    # Save full model
     save_model_checkpoint(
         unwrapped_model.state_dict(), save_dir / "total_model.safetensors"
     )
