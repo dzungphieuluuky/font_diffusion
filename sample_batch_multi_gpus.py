@@ -43,8 +43,6 @@ from src.dpm_solver.pipeline_dpm_solver import FontDiffuserDPMPipeline
 from utils import is_char_in_font, load_ttf, ttf2im
 from utilities import (
     get_hf_bar,
-    get_hf_bar_batch,
-    get_hf_bar_file,
 )
 
 # Configure logging for multi-GPU

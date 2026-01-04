@@ -33,15 +33,12 @@ HF_BLUE = "#1055C9"
 HF_GREEN = "#00C896"
 HF_ORANGE = "#FF8C00"
 HF_RED = "#E03E3E"
-
 # Enhanced bar format with smooth animation
 HF_BAR_FORMAT = (
     "{desc}: {percentage:3.0f}%|{bar}| "
     "{n_fmt}/{total_fmt} "
     "[{elapsed}<{remaining}, {rate_fmt}]"
 )
-
-
 class HFTqdm(tqdm):
     """
     Enhanced TQDM progress bar that replicates the Hugging Face download interface.
@@ -121,99 +118,15 @@ class HFTqdm(tqdm):
     def __exit__(self, exc_type, exc_val, exc_tb):
         """Context manager exit with error handling."""
         if exc_type is not None:
-            # Error occurred - show red
             self.colour = HF_RED
             error_desc = f"✗ {self._base_desc} (failed)"
             self.set_description(error_desc, refresh=False)
         self.close()
-        return False
-
-
-class HFTqdmFile(HFTqdm):
-    """
-    Specialized progress bar for file operations with byte formatting.
-    """
-    
-    def __init__(self, *args, **kwargs):
-        kwargs.setdefault("unit", "B")
-        kwargs.setdefault("unit_scale", True)
-        kwargs.setdefault("unit_divisor", 1024)
-        super().__init__(*args, **kwargs)
-
-
-class HFTqdmBatch(HFTqdm):
-    """
-    Specialized progress bar for batch processing with sample counting.
-    """
-    
-    def __init__(self, *args, **kwargs):
-        kwargs.setdefault("unit", "sample")
-        kwargs.setdefault("unit_scale", False)
-        super().__init__(*args, **kwargs)
-        
+        return False        
 
 def get_hf_bar(iterable=None, desc="Processing", total=None, unit="it", **kwargs):
-    """
-    Factory function for HuggingFace-style progress bars.
-    
-    Args:
-        iterable: Iterable to wrap (optional)
-        desc: Description text (default: "Processing")
-        total: Total number of iterations (optional)
-        unit: Unit name (default: "it")
-        **kwargs: Additional tqdm parameters
-        
-    Returns:
-        HFTqdm instance
-        
-    Examples:
-        >>> for item in get_hf_bar(items, desc="Loading data"):
-        ...     process(item)
-        
-        >>> with get_hf_bar(total=100, desc="Training") as pbar:
-        ...     for i in range(100):
-        ...         train_step()
-        ...         pbar.update(1)
-    """
     kwargs["unit"] = unit
-    if "file" in desc.lower():
-        return HFTqdmFile(iterable=iterable, desc=desc, total=total, **kwargs)
-    elif "batch" in desc.lower():
-        return HFTqdmBatch(iterable=iterable, desc=desc, total=total, **kwargs)
-    else:
-        return HFTqdm(iterable=iterable, desc=desc, total=total, **kwargs)
-
-
-def get_hf_bar_file(iterable=None, desc="File processing", total=None, **kwargs):
-    """
-    Create progress bar optimized for file downloads/transfers.
-    
-    Args:
-        iterable: Iterable to wrap
-        desc: Description (default: "File processing")
-        total: Total bytes
-        **kwargs: Additional parameters
-        
-    Returns:
-        HFTqdmFile instance
-    """
-    return HFTqdmFile(iterable=iterable, desc=desc, total=total, **kwargs)
-
-
-def get_hf_bar_batch(iterable=None, desc="Processing batches", total=None, **kwargs):
-    """
-    Create progress bar optimized for batch processing.
-    
-    Args:
-        iterable: Iterable to wrap
-        desc: Description (default: "Processing batches")
-        total: Total batches
-        **kwargs: Additional parameters
-        
-    Returns:
-        HFTqdmBatch instance
-    """
-    return HFTqdmBatch(iterable=iterable, desc=desc, total=total, **kwargs)
+    return HFTqdm(iterable=iterable, desc=desc, total=total, **kwargs)
 
 def load_model_checkpoint(checkpoint_path: str | Path) -> Dict[str, Any]:
     if isinstance(checkpoint_path, Path):

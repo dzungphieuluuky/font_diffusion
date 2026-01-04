@@ -129,7 +129,11 @@ class DatasetBuilder:
 
         skipped = 0
 
-        for gen in get_hf_bar(generations, desc="Loading image pairs", unit="pair"):
+        for gen in get_hf_bar(
+            generations, 
+            desc="Loading image pairs", 
+            unit="pair"
+        ):
             char = gen.get("character")
             style = gen.get("style")
             font = gen.get("font", "unknown")
