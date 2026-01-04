@@ -25,6 +25,7 @@ import torchvision.transforms as transforms
 from argparse import Namespace, ArgumentParser
 
 from src.dpm_solver.pipeline_dpm_solver import FontDiffuserDPMPipeline
+from src.model import StyleTransformationModule
 from utilities import (
     save_model_checkpoint,
     load_model_checkpoint,
@@ -412,7 +413,7 @@ def parse_args() -> Namespace:
     parser.add_argument(
         "--output_dir",
         type=str,
-        default="data_examples/train_original",
+        default="my_dataset/train_original",
         help="Output directory (will create ContentImage/ and TargetImage/ subdirs)",
     )
     parser.add_argument(
@@ -433,6 +434,49 @@ def parse_args() -> Namespace:
         help="Path to TTF font file or directory with multiple fonts",
     )
     parser.add_argument("--device", type=str, default="cuda", help="Device to use")
+
+    parser.add_argument(
+        "--enable_style_transform",
+        action="store_true",
+        default=False,
+        help="Enable style transformation module"
+    )
+    parser.add_argument(
+        "--num_scales",
+        type=int,
+        default=4,
+        help="Number of scales in style transformation"
+    )
+    parser.add_argument(
+        "--feature_dim",
+        type=int,
+        default=512,
+        help="Feature dimension for style transformation"
+    )
+    parser.add_argument(
+        "--hidden_dim",
+        type=int,
+        default=256,
+        help="Hidden dimension for style transformation"
+    )
+    parser.add_argument(
+        "--num_heads",
+        type=int,
+        default=8,
+        help="Number of attention heads"
+    )
+    parser.add_argument(
+        "--ffn_dim",
+        type=int,
+        default=2048,
+        help="Feedforward Network dimension"
+    )
+    parser.add_argument(
+        "--style_transform_coefficient",
+        type=float,
+        default=0.1,
+        help="Loss coefficient for style transformation"
+    )
 
     # Generation parameters
     parser.add_argument(
@@ -797,7 +841,6 @@ def generate_content_images(
 
     return char_paths
 
-
 def batch_generate_images(
     pipe: FontDiffuserDPMPipeline,
     characters: List[str],
@@ -810,8 +853,6 @@ def batch_generate_images(
 ) -> Dict[str, Any]:
     """
     ✅ Main batch generation with hash-based file naming
-    Checks generation_tracker to skip already processed combinations
-    ✅ CORRECTED: Accumulates ALL characters and styles across sessions
     """
 
     # Generate ALL content images first
@@ -826,7 +867,7 @@ def batch_generate_images(
     if not char_paths:
         raise ValueError("No content images generated!")
 
-    # ✅ CORRECTED: Extract ALL unique characters and styles from checkpoint
+    # Extract ALL unique characters and styles from checkpoint
     all_chars_in_checkpoint: Set[str] = set()
     all_styles_in_checkpoint: Set[str] = set()
 
@@ -834,12 +875,11 @@ def batch_generate_images(
         all_chars_in_checkpoint.add(gen.get("character", ""))
         all_styles_in_checkpoint.add(gen.get("style", ""))
 
-    # ✅ Add current session's chars
+    # Add current session's chars
     all_chars_in_checkpoint.update(char_paths.keys())
 
-    # ✅ Add current session's styles (only those that were actually generated)
+    # Add current session's styles
     for style_path, style_name in style_paths_with_names:
-        # Check if this style has any generations
         if any(
             gen.get("style") == style_name for gen in generation_tracker.generations
         ):
@@ -873,8 +913,9 @@ def batch_generate_images(
     logging.info(
         f"Previously generated: {len(generation_tracker.generations)} unique pairs"
     )
-    logging.info(f"Unique chars seen:    {len(all_chars_in_checkpoint)}")  # ✅ NEW
-    logging.info(f"Unique styles used:   {len(all_styles_in_checkpoint)}")  # ✅ NEW
+    logging.info(f"Unique chars seen:    {len(all_chars_in_checkpoint)}")
+    logging.info(f"Unique styles used:   {len(all_styles_in_checkpoint)}")
+    logging.info(f"Style Transform:      {getattr(args, 'enable_style_transform', False)}")  # ✅ ADD THIS
     logging.info("=" * 60 + "\n")
 
     # Use first font for all characters
@@ -920,9 +961,15 @@ def batch_generate_images(
                 f"  🔄 {style_name}: Generating {len(chars_to_generate)}/{len(characters)} new images"
             )
 
-            # Sample batch
+            # ✅ PASS STYLE TRANSFORM FLAG TO SAMPLING
             images, valid_chars, batch_time = sampling_batch_optimized(
-                args, pipe, chars_to_generate, style_path, font_manager, primary_font
+                args,
+                pipe,
+                chars_to_generate,
+                style_path,
+                font_manager,
+                primary_font,
+                enable_style_transform=getattr(args, 'enable_style_transform', False),  # ✅ ADD THIS
             )
 
             if images is None:
@@ -935,7 +982,6 @@ def batch_generate_images(
             # Save images and metadata
             for char, img in zip(valid_chars, images):
                 try:
-                    # ✅ Use proper font coverage check
                     if not font_manager.is_char_in_font(primary_font, char):
                         logging.error(
                             f"    ✗ Character '{char}' (U+{ord(char):04X}) not in font {primary_font}, skipping"
@@ -943,13 +989,9 @@ def batch_generate_images(
                         failed_count += 1
                         continue
 
-                    # ✅ Generate filename (character inclusion determined by filesystem safety, not printability)
                     target_filename = get_target_filename(char, style_name)
 
-                    # ✅ Validate filename format
                     import re
-
-                    # Valdate target filename format: {style}+{char}.png
                     expected_pattern = r".+\+.\.png"
                     if not re.match(expected_pattern, target_filename):
                         raise ValueError(
@@ -958,7 +1000,6 @@ def batch_generate_images(
                         )
 
                     img_path = os.path.join(style_dir, target_filename)
-
                     content_filename = get_content_filename(char)
                     content_path_rel = f"ContentImage/{content_filename}"
                     target_path_rel = f"TargetImage/{style_name}/{target_filename}"
@@ -968,7 +1009,6 @@ def batch_generate_images(
                         f"    ✓ Saved generated image for '{char}' (U+{ord(char):04X}) at {img_path}."
                     )
 
-                    # Add generation record with hashes
                     generation_record = {
                         "character": char,
                         "char_code": f"U+{ord(char):04X}",
@@ -977,9 +1017,7 @@ def batch_generate_images(
                         "content_image_path": content_path_rel,
                         "target_image_path": target_path_rel,
                         "content_hash": compute_file_hash(char, "", primary_font),
-                        "target_hash": compute_file_hash(
-                            char, style_name, primary_font
-                        ),
+                        "target_hash": compute_file_hash(char, style_name, primary_font),
                         "content_filename": content_filename,
                         "target_filename": target_filename,
                     }
@@ -1028,7 +1066,6 @@ def batch_generate_images(
         except Exception as e:
             logging.info(f"  ✗ {style_name}: {e}")
             import traceback
-
             traceback.print_exc()
             failed_count += len(chars_to_generate)
 
@@ -1051,6 +1088,7 @@ def sampling_batch_optimized(
     style_image_path: Union[str, Image.Image],
     font_manager: FontManager,
     font_name: str,
+    enable_style_transform: bool = False,  # ✅ ADD THIS PARAMETER
 ) -> Tuple[Optional[List[Image.Image]], Optional[List[str]], Optional[float]]:
     """Batch sampling for multiple characters with specific font"""
 
@@ -1122,6 +1160,7 @@ def sampling_batch_optimized(
                 batch_content: torch.Tensor = content_batch[i : i + batch_size]
                 batch_style: torch.Tensor = style_batch[i : i + batch_size]
 
+                # ✅ PASS STYLE TRANSFORM FLAG TO PIPELINE
                 images: List[Image.Image] = pipe.generate(
                     content_images=batch_content,
                     style_images=batch_style,
@@ -1136,6 +1175,7 @@ def sampling_batch_optimized(
                     skip_type=args.skip_type,
                     method=args.method,
                     correcting_x0_fn=args.correcting_x0_fn,
+                    enable_style_transform=enable_style_transform,  # ✅ ADD THIS
                 )
 
                 all_images.extend(images)
@@ -1149,11 +1189,9 @@ def sampling_batch_optimized(
     except Exception as e:
         logging.info(f"    ✗ Error in batch sampling: {e}")
         import traceback
-
         traceback.print_exc()
         return None, None, None
-
-
+    
 def _print_checkpoint_status(
     current_style: int,
     total_styles: int,
@@ -1647,3 +1685,11 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+"""Example usage
+python sample_batch.py \
+    --characters chars.txt \
+    --style_images styles/ \
+    --enable_style_transform \
+    --output_dir output/
+"""

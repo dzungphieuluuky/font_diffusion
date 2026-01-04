@@ -25,6 +25,8 @@ from dataset.font_dataset import FontDataset
 from src import (
     ContentPerceptualLoss,
     FontDiffuserModel,
+    StyleTransformationModule,
+
     build_content_encoder,
     build_ddpm_scheduler,
     build_scr,
@@ -328,20 +330,7 @@ def train_step(
     args,
     accelerator: Accelerator,
 ) -> tuple[torch.Tensor, dict]:
-    """Execute single training step.
-
-    Args:
-        model: FontDiffuser model
-        samples: Batch of samples
-        noise_scheduler: DDPM scheduler
-        perceptual_loss: Perceptual loss module
-        scr: Style-content recognition module (optional)
-        args: Training arguments
-        accelerator: Accelerator instance
-
-    Returns:
-        Tuple of (loss, logs_dict)
-    """
+    """Execute single training step."""
     model.train()
 
     content_images = samples["content_image"]
@@ -365,13 +354,24 @@ def train_step(
     # Apply classifier-free guidance
     apply_classifier_free_guidance(content_images, style_images, args.drop_prob)
 
+    # ✅ PREPARE SOURCE STYLE IMAGES FOR STYLE TRANSFORMATION
+    source_style_images = None
+    if getattr(args, 'enable_style_transform', False) and 'source_style_image' in samples:
+        source_style_images = samples["source_style_image"]
+        apply_classifier_free_guidance(
+            torch.zeros_like(source_style_images),
+            source_style_images,
+            args.drop_prob
+        )
+
     # Forward pass
-    noise_pred, offset_out_sum = model(
+    noise_pred, offset_out_sum, style_transform_feature = model(
         x_t=noisy_target_images,
         timesteps=timesteps,
         style_images=style_images,
         content_images=content_images,
         content_encoder_downsample_size=args.content_encoder_downsample_size,
+        source_style_images=source_style_images,  # ✅ ADD THIS
     )
 
     # Compute losses
@@ -388,6 +388,16 @@ def train_step(
         device=target_images.device,
     )
 
+    # ✅ ADD STYLE TRANSFORMATION LOSS IF APPLICABLE
+    if getattr(args, 'enable_style_transform', False) and style_transform_feature is not None:
+        style_transform_loss = F.mse_loss(
+            style_transform_feature,
+            torch.zeros_like(style_transform_feature),
+            reduction='mean'
+        )
+        loss += getattr(args, 'style_transform_coefficient', 0.1) * style_transform_loss
+        loss_dict['style_transform_loss'] = style_transform_loss.item()
+
     # Add Phase 2 loss if applicable
     if args.phase_2 and scr is not None:
         sc_loss = compute_phase2_loss(
@@ -401,7 +411,6 @@ def train_step(
         loss_dict["sc_loss"] = sc_loss.item()
 
     return loss, loss_dict
-
 
 def train(
     model: FontDiffuserModel,
@@ -543,6 +552,19 @@ def main():
     content_encoder = build_content_encoder(args=args)
     noise_scheduler = build_ddpm_scheduler(args)
 
+    # ✅ BUILD STYLE TRANSFORMATION MODULE
+    style_transform_module = None
+    if getattr(args, 'enable_style_transform', False):
+        logger.info("Building Style Transformation Module...")
+        style_transform_module = StyleTransformationModule(
+            num_scales=getattr(args, 'num_scales', 4),
+            feature_dim=getattr(args, 'feature_dim', 512),
+            hidden_dim=getattr(args, 'hidden_dim', 256),
+            num_heads=getattr(args, 'num_heads', 8),
+            ffn_dim=getattr(args, 'ffn_dim', 2048),
+        )
+        logger.info("✓ Style Transformation Module built successfully")
+
     # Load Phase 1 checkpoints if provided
     if args.phase_1_ckpt_dir is not None:
         load_phase1_checkpoints(
@@ -556,7 +578,10 @@ def main():
 
     # Build FontDiffuser model
     model = FontDiffuserModel(
-        unet=unet, style_encoder=style_encoder, content_encoder=content_encoder
+        unet=unet,
+        style_encoder=style_encoder,
+        content_encoder=content_encoder,
+        style_transform_module=style_transform_module,  # ✅ ADD THIS
     )
 
     # Build perceptual loss
@@ -581,6 +606,7 @@ def main():
         phase="train",
         transforms=[content_tfm, style_tfm, target_tfm],
         scr=args.phase_2,
+        include_source_style=getattr(args, 'enable_style_transform', False),  # ✅ ADD THIS
     )
     train_dataloader = torch.utils.data.DataLoader(
         train_dataset,
@@ -636,6 +662,7 @@ def main():
     logger.info(f"  Num batches per epoch: {len(train_dataloader)}")
     logger.info(f"  Total training steps: {args.max_train_steps}")
     logger.info(f"  Gradient accumulation steps: {args.gradient_accumulation_steps}")
+    logger.info(f"  Style Transform Module: {getattr(args, 'enable_style_transform', False)}")
 
     train(
         model=model,
@@ -655,3 +682,11 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+"""Example:
+python my_train.py \
+    --enable_style_transform \
+    --num_scales 4 \
+    --feature_dim 512 \
+    --style_transform_coefficient 0.1
+"""

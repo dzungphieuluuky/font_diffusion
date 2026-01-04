@@ -52,7 +52,7 @@ class HFTqdm(tqdm):
         kwargs.setdefault("bar_format", HF_BAR_FORMAT)
         kwargs.setdefault("colour", HF_BLUE)
         kwargs.setdefault("ascii", False)
-        kwargs.setdefault("dynamic_ncols", True)  # Adaptive width
+        kwargs.setdefault("ncols", 100)
         kwargs.setdefault("mininterval", 0.1)  # Smooth updates (100ms)
         kwargs.setdefault("maxinterval", 1.0)
         kwargs.setdefault("smoothing", 0.3)  # Smooth rate averaging
