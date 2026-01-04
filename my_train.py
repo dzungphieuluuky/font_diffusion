@@ -606,7 +606,7 @@ def main():
         phase="train",
         transforms=[content_tfm, style_tfm, target_tfm],
         scr=args.phase_2,
-        include_source_style=getattr(args, 'enable_style_transform', False),  # ✅ ADD THIS
+        include_source_style=getattr(args, 'enable_style_transform', False),
     )
     train_dataloader = torch.utils.data.DataLoader(
         train_dataset,
