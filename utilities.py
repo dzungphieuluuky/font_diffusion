@@ -4,12 +4,12 @@ from typing import Optional
 import torch
 from safetensors.torch import save_file
 import shutil
-from tqdm.rich import tqdm
 import time
 from typing import Any, Dict
 import logging
 import json
 import os
+from tqdm.rich import tqdm, trange
 
 
 class TqdmLoggingHandler(logging.Handler):
