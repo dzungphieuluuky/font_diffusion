@@ -63,7 +63,10 @@ def get_hf_bar(iterable=None, desc="File", total=None, **kwargs):
     return HFTqdm(iterable=iterable, desc=desc, total=total, **kwargs)
 
 
-def load_model_checkpoint(checkpoint_path: str):
+def load_model_checkpoint(checkpoint_path: str | Path) -> Dict[str, Any]:
+    if isinstance(checkpoint_path, Path):
+        checkpoint_path = str(checkpoint_path)
+        
     if not os.path.exists(checkpoint_path):
         raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
     if checkpoint_path.endswith(".safetensors"):
@@ -74,8 +77,10 @@ def load_model_checkpoint(checkpoint_path: str):
         state_dict = torch.load(checkpoint_path, map_location="cpu")
     return state_dict
 
+def save_model_checkpoint(model_state_dict, checkpoint_path: str | Path):
+    if isinstance(checkpoint_path, Path):
+        checkpoint_path = str(checkpoint_path)
 
-def save_model_checkpoint(model_state_dict, checkpoint_path: str):
     os.makedirs(os.path.dirname(checkpoint_path), exist_ok=True)
     if checkpoint_path.endswith(".safetensors"):
         from safetensors.torch import save_file as safe_save
