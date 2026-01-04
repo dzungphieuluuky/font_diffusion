@@ -4,7 +4,7 @@ from typing import Optional
 import torch
 from safetensors.torch import save_file
 import shutil
-from tqdm.auto import tqdm
+from tqdm.rich import tqdm
 import time
 from typing import Any, Dict
 import logging
